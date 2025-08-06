@@ -23,10 +23,10 @@ logger = setup_llm_logging()
 try:
     from tradingagents.config.config_manager import token_tracker
     TOKEN_TRACKING_ENABLED = True
-    logger.info("✅ Token跟踪功能已启用")
+    logger.info("[SUCCESS] Token tracking enabled")
 except ImportError:
     TOKEN_TRACKING_ENABLED = False
-    logger.warning("⚠️ Token跟踪功能未启用")
+    logger.warning("Token tracking not enabled")
 
 
 class OpenAICompatibleBase(ChatOpenAI):
@@ -96,10 +96,12 @@ class OpenAICompatibleBase(ChatOpenAI):
         
         # 初始化父类
         super().__init__(**openai_kwargs)
+        
+        # 存储自定义属性（使用下划线避免Pydantic冲突）
+        self._provider_name = provider_name
+        self._model_name = model
 
-        logger.info(f"✅ {provider_name} OpenAI兼容适配器初始化成功")
-        logger.info(f"   模型: {model}")
-        logger.info(f"   API Base: {base_url}")
+        logger.info(f"{provider_name} OpenAI compatible adapter initialized")
     
     def _generate(
         self,
@@ -215,6 +217,21 @@ class ChatDashScopeOpenAIUnified(OpenAICompatibleBase):
         )
 
 
+# 导入新的适配器类
+try:
+    from .kimi_adapter import ChatKimi
+    KIMI_AVAILABLE = True
+except ImportError:
+    KIMI_AVAILABLE = False
+    ChatKimi = None
+
+try:
+    from .glm_adapter import ChatGLM
+    GLM_AVAILABLE = True
+except ImportError:
+    GLM_AVAILABLE = False
+    ChatGLM = None
+
 # 支持的OpenAI兼容模型配置
 OPENAI_COMPATIBLE_PROVIDERS = {
     "deepseek": {
@@ -239,6 +256,32 @@ OPENAI_COMPATIBLE_PROVIDERS = {
         }
     }
 }
+
+# 动态添加新适配器
+if KIMI_AVAILABLE:
+    OPENAI_COMPATIBLE_PROVIDERS["kimi"] = {
+        "adapter_class": ChatKimi,
+        "base_url": "https://api.moonshot.cn/v1",
+        "api_key_env": "KIMI_API_KEY",
+        "models": {
+            "moonshot-v1-8k": {"context_length": 8192, "supports_function_calling": True},
+            "moonshot-v1-32k": {"context_length": 32768, "supports_function_calling": True},
+            "moonshot-v1-128k": {"context_length": 131072, "supports_function_calling": True}
+        }
+    }
+
+if GLM_AVAILABLE:
+    OPENAI_COMPATIBLE_PROVIDERS["glm"] = {
+        "adapter_class": ChatGLM,
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "api_key_env": "GLM_API_KEY",
+        "models": {
+            "glm-4-plus": {"context_length": 128000, "supports_function_calling": True},
+            "glm-4": {"context_length": 128000, "supports_function_calling": True},
+            "glm-4-air": {"context_length": 128000, "supports_function_calling": True},
+            "glm-4-flash": {"context_length": 128000, "supports_function_calling": True}
+        }
+    }
 
 
 def create_openai_compatible_llm(

@@ -130,6 +130,7 @@ def render_analysis_info(results):
                 'fundamentals': '💰 基本面分析师',
                 'news': '📰 新闻分析师',
                 'social_media': '💭 社交媒体分析师',
+                'heat': '🔥 热度分析师',
                 'risk': '⚠️ 风险评估师'
             }
 
@@ -270,6 +271,12 @@ def render_detailed_analysis(state):
             'title': '📰 新闻事件分析',
             'icon': '📰', 
             'description': '相关新闻事件、市场动态影响分析'
+        },
+        {
+            'key': 'heat_report',
+            'title': '🔥 市场热度分析',
+            'icon': '🔥',
+            'description': '市场热度、社交媒体关注度、成交量异动分析'
         },
         {
             'key': 'risk_assessment',

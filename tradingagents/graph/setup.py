@@ -49,7 +49,7 @@ class GraphSetup:
         self.react_llm = react_llm
 
     def setup_graph(
-        self, selected_analysts=["market", "social", "news", "fundamentals"]
+        self, selected_analysts=["market", "social", "news", "fundamentals", "heat"]
     ):
         """Set up and compile the agent workflow graph.
 
@@ -59,6 +59,7 @@ class GraphSetup:
                 - "social": Social media analyst
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
+                - "heat": Heat analyst
         """
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
@@ -135,6 +136,14 @@ class GraphSetup:
             )
             delete_nodes["fundamentals"] = create_msg_delete()
             tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
+
+        if "heat" in selected_analysts:
+            logger.debug(f"🔥 [DEBUG] 使用热度分析师")
+            analyst_nodes["heat"] = create_heat_analyst(
+                self.quick_thinking_llm, self.toolkit
+            )
+            delete_nodes["heat"] = create_msg_delete()
+            tool_nodes["heat"] = self.tool_nodes["heat"]
 
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(

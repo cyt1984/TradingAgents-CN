@@ -8,6 +8,8 @@ from tradingagents.utils.logging_init import get_logger
 from tradingagents.utils.tool_logging import log_analyst_module
 # 导入统一新闻工具
 from tradingagents.tools.unified_news_tool import create_unified_news_tool
+# 导入增强新闻工具
+from tradingagents.tools.enhanced_news_tool import get_enhanced_stock_news
 # 导入股票工具类
 from tradingagents.utils.stock_utils import StockUtils
 
@@ -29,14 +31,50 @@ def create_news_analyst(llm, toolkit):
         market_info = StockUtils.get_market_info(ticker)
         logger.info(f"[新闻分析师] 股票类型: {market_info['market_name']}")
         
-        # 🔧 使用统一新闻工具，简化工具调用
-        logger.info(f"[新闻分析师] 使用统一新闻工具，自动识别股票类型并获取相应新闻")
-   # 创建统一新闻工具
+        # 🚀 使用增强新闻工具，集成多个数据源
+        logger.info(f"[新闻分析师] 使用增强新闻工具，整合东方财富、新浪、腾讯等多数据源")
+        
+        # 获取最新研报发布信息
+        research_report_news = ""
+        try:
+            from tradingagents.dataflows.research_report_utils import get_stock_research_reports
+            recent_reports = get_stock_research_reports(ticker, limit=5)
+            
+            if recent_reports:
+                research_report_news = f"""
+                
+📊 **最新研报发布动态**：
+"""
+                for i, report in enumerate(recent_reports[:3], 1):
+                    research_report_news += f"""
+{i}. **{report.institution}** ({report.publish_date})
+   - 标题: {report.title}
+   - 评级: {report.rating}
+   - 目标价: {report.target_price or '未披露'} {market_info['currency_symbol']}
+   - 核心观点: {report.summary[:100]}..."""
+                
+                research_report_news += f"""
+
+⚠️ **重要提醒**: 请将上述研报发布作为重要新闻事件进行分析，评估其对股价和市场情绪的潜在影响。
+"""
+                logger.info(f"[新闻分析师] 获取到 {len(recent_reports)} 条最新研报信息")
+            else:
+                logger.debug(f"[新闻分析师] 暂无研报发布信息，将专注于其他新闻源分析")
+                research_report_news = ""
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [新闻分析师] 获取研报发布信息失败: {e}")
+            research_report_news = ""
+        
+        # 创建增强新闻工具（优先）+ 统一新闻工具（备用）
+        enhanced_news_tool = get_enhanced_stock_news
+        enhanced_news_tool.name = "get_enhanced_stock_news"
+        
         unified_news_tool = create_unified_news_tool(toolkit)
         unified_news_tool.name = "get_stock_news_unified"
         
-        tools = [unified_news_tool]
-        logger.info(f"[新闻分析师] 已加载统一新闻工具: get_stock_news_unified")
+        tools = [enhanced_news_tool, unified_news_tool]
+        logger.info(f"[新闻分析师] 已加载增强新闻工具: {[tool.name for tool in tools]}")
 
         system_message = (
             """您是一位专业的财经新闻分析师，负责分析最新的市场新闻和事件对股票价格的潜在影响。
@@ -55,6 +93,7 @@ def create_news_analyst(llm, toolkit):
 - 突发事件和危机管理
 - 行业趋势和技术突破
 - 管理层变动和战略调整
+- **研报发布事件**：券商研报发布、评级调整、目标价变化
 
 分析要点：
 - 新闻的时效性（发布时间距离现在多久）
@@ -94,8 +133,10 @@ def create_news_analyst(llm, toolkit):
                     "\n- 绝对禁止说'我无法获取实时数据'等借口"
                     "\n"
                     "\n✅ 强制执行步骤："
-                    "\n1. 您的第一个动作必须是调用 get_stock_news_unified 工具"
-                    "\n2. 该工具会自动识别股票类型（A股、港股、美股）并获取相应新闻"
+                    "\n1. 您的第一个动作必须是调用 get_enhanced_stock_news 工具（推荐）"
+                    "\n   - 该工具整合东方财富、新浪、腾讯等多个数据源"
+                    "\n   - 提供更丰富、更全面的新闻数据"
+                    "\n2. 如果增强工具失败，可备用 get_stock_news_unified 工具"
                     "\n3. 只有在成功获取新闻数据后，才能开始分析"
                     "\n4. 您的回答必须基于工具返回的真实数据"
                     "\n"
@@ -108,6 +149,7 @@ def create_news_analyst(llm, toolkit):
                     "\n"
                     "\n您可以访问以下工具：{tool_names}。"
                     "\n{system_message}"
+                    "\n{research_report_context}"
                     "\n供您参考，当前日期是{current_date}。我们正在查看公司{ticker}。"
                     "\n请严格按照上述要求执行，用中文撰写所有分析内容。",
                 ),
@@ -119,6 +161,7 @@ def create_news_analyst(llm, toolkit):
         prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(ticker=ticker)
+        prompt = prompt.partial(research_report_context=research_report_news)
         
         logger.info(f"[新闻分析师] 准备调用LLM进行新闻分析，模型: {llm.__class__.__name__}")
         

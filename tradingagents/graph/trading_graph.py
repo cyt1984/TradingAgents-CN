@@ -42,7 +42,7 @@ class TradingAgentsGraph:
 
     def __init__(
         self,
-        selected_analysts=["market", "social", "news", "fundamentals"],
+        selected_analysts=["market", "social", "news", "fundamentals", "heat"],
         debug=False,
         config: Dict[str, Any] = None,
     ):
@@ -152,6 +152,61 @@ class TradingAgentsGraph:
                 )
 
             logger.info(f"✅ [DeepSeek] 已启用token统计功能")
+        elif (self.config["llm_provider"].lower() == "kimi" or
+              "kimi" in self.config["llm_provider"].lower() or
+              "moonshot" in self.config["llm_provider"].lower()):
+            # Kimi K2配置 - 使用OpenAI兼容接口
+            kimi_api_key = os.getenv('KIMI_API_KEY')
+            if not kimi_api_key:
+                raise ValueError("使用Kimi需要设置KIMI_API_KEY环境变量")
+
+            kimi_base_url = os.getenv('KIMI_BASE_URL', 'https://api.moonshot.cn/v1')
+
+            # 使用OpenAI兼容接口
+            self.deep_thinking_llm = ChatOpenAI(
+                model=self.config["deep_think_llm"],
+                api_key=kimi_api_key,
+                base_url=kimi_base_url,
+                temperature=0.1,
+                max_tokens=2000
+            )
+            self.quick_thinking_llm = ChatOpenAI(
+                model=self.config["quick_think_llm"],
+                api_key=kimi_api_key,
+                base_url=kimi_base_url,
+                temperature=0.1,
+                max_tokens=2000
+            )
+
+            logger.info("Kimi K2 configured successfully")
+        elif (self.config["llm_provider"].lower() == "glm" or
+              "glm" in self.config["llm_provider"].lower() or
+              "智谱" in self.config["llm_provider"] or
+              "zhipu" in self.config["llm_provider"].lower()):
+            # GLM-4.5配置 - 使用OpenAI兼容接口
+            glm_api_key = os.getenv('GLM_API_KEY')
+            if not glm_api_key:
+                raise ValueError("使用GLM需要设置GLM_API_KEY环境变量")
+
+            glm_base_url = os.getenv('GLM_BASE_URL', 'https://open.bigmodel.cn/api/paas/v4')
+
+            # 使用OpenAI兼容接口
+            self.deep_thinking_llm = ChatOpenAI(
+                model=self.config["deep_think_llm"],
+                api_key=glm_api_key,
+                base_url=glm_base_url,
+                temperature=0.1,
+                max_tokens=2000
+            )
+            self.quick_thinking_llm = ChatOpenAI(
+                model=self.config["quick_think_llm"],
+                api_key=glm_api_key,
+                base_url=glm_base_url,
+                temperature=0.1,
+                max_tokens=2000
+            )
+
+            logger.info("GLM-4.5 configured successfully")
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
         
@@ -251,6 +306,7 @@ class TradingAgentsGraph:
                     self.toolkit.get_simfin_income_stmt,
                 ]
             ),
+            "heat": ToolNode([]),  # 热度分析师使用内部工具，不需要外部工具节点
         }
 
     def propagate(self, company_name, trade_date):
@@ -306,6 +362,7 @@ class TradingAgentsGraph:
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
             "fundamentals_report": final_state["fundamentals_report"],
+            "heat_report": final_state.get("heat_report", ""),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],

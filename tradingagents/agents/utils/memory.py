@@ -278,8 +278,7 @@ class FinancialSituationMemory:
 
         # 检查记忆功能是否被禁用
         if self.client == "DISABLED":
-            # 内存功能已禁用，返回空向量
-            logger.debug(f"⚠️ 记忆功能已禁用，返回空向量")
+            # 内存功能已禁用，静默返回空向量
             return [0.0] * 1024  # 返回1024维的零向量
 
         if (self.llm_provider == "dashscope" or
@@ -311,15 +310,14 @@ class FinancialSituationMemory:
                     logger.debug(f"✅ DashScope embedding成功，维度: {len(embedding)}")
                     return embedding
                 else:
-                    # API返回错误状态码
-                    logger.error(f"❌ DashScope API错误: {response.code} - {response.message}")
-                    logger.warning(f"⚠️ 记忆功能降级，返回空向量")
+                    # API返回错误状态码 - 降低日志级别避免噪音
+                    logger.debug(f"⚠️ DashScope API错误: {response.code} - {response.message}")
+                    logger.debug(f"💡 记忆功能降级，返回空向量")
                     return [0.0] * 1024  # 返回空向量而不是抛出异常
 
             except ImportError as e:
-                # dashscope包未安装
-                logger.error(f"❌ DashScope包未安装: {str(e)}")
-                logger.warning(f"⚠️ 记忆功能降级，返回空向量")
+                # dashscope包未安装 - 降低日志级别
+                logger.debug(f"📦 DashScope包未安装: {str(e)}")
                 return [0.0] * 1024
 
             except AttributeError as e:
@@ -397,8 +395,7 @@ class FinancialSituationMemory:
 
             except Exception as e:
                 # 其他所有异常
-                logger.error(f"❌ OpenAI embedding未知异常: {str(e)}")
-                logger.warning(f"⚠️ 记忆功能降级，返回空向量")
+                logger.debug(f"💡 嵌入服务不可用，使用空向量: {str(e)}")
                 return [0.0] * 1024
 
             response = self.client.embeddings.create(

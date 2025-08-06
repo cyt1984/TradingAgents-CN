@@ -209,11 +209,13 @@ def render_sidebar():
         # LLM提供商选择
         llm_provider = st.selectbox(
             "LLM提供商",
-            options=["dashscope", "deepseek", "google", "openrouter"],
-            index=["dashscope", "deepseek", "google", "openrouter"].index(st.session_state.llm_provider) if st.session_state.llm_provider in ["dashscope", "deepseek", "google", "openrouter"] else 0,
+            options=["dashscope", "deepseek", "kimi", "glm", "google", "openrouter"],
+            index=["dashscope", "deepseek", "kimi", "glm", "google", "openrouter"].index(st.session_state.llm_provider) if st.session_state.llm_provider in ["dashscope", "deepseek", "kimi", "glm", "google", "openrouter"] else 0,
             format_func=lambda x: {
                 "dashscope": "🇨🇳 阿里百炼",
                 "deepseek": "🚀 DeepSeek V3",
+                "kimi": "🌙 Kimi Moonshot",
+                "glm": "🧠 GLM-4.5",
                 "google": "🌟 Google AI",
                 "openrouter": "🌐 OpenRouter"
             }[x],
@@ -322,7 +324,77 @@ def render_sidebar():
 
             # 保存到持久化存储
             save_model_selection(st.session_state.llm_provider, st.session_state.model_category, llm_model)
-        else:  # openrouter
+
+        elif llm_provider == "kimi":
+            kimi_options = [
+                "moonshot-v1-8k", 
+                "moonshot-v1-32k", 
+                "moonshot-v1-128k",
+                "kimi-k2-0711-preview",
+                "kimi-k2-turbo-preview"
+            ]
+
+            # 获取当前选择的索引
+            current_index = 1  # 默认选择moonshot-v1-32k
+            if st.session_state.llm_model in kimi_options:
+                current_index = kimi_options.index(st.session_state.llm_model)
+
+            llm_model = st.selectbox(
+                "选择Kimi模型",
+                options=kimi_options,
+                index=current_index,
+                format_func=lambda x: {
+                    "moonshot-v1-8k": "Moonshot v1-8k - 标准版 (8K上下文)",
+                    "moonshot-v1-32k": "Moonshot v1-32K - 增强版 (32K上下文)",
+                    "moonshot-v1-128k": "Moonshot v1-128K - 旗舰版 (128K上下文)",
+                    "kimi-k2-0711-preview": "Kimi K2 0711-Preview - 最新K2模型 (8K上下文)",
+                    "kimi-k2-turbo-preview": "Kimi K2 Turbo-Preview - K2涡轮模型 (8K上下文，更快)"
+                }[x],
+                help="选择用于分析的月之暗面Kimi模型",
+                key="kimi_model_select"
+            )
+
+            # 更新session state和持久化存储
+            if st.session_state.llm_model != llm_model:
+                logger.debug(f"🔄 [Persistence] Kimi模型变更: {st.session_state.llm_model} → {llm_model}")
+            st.session_state.llm_model = llm_model
+            logger.debug(f"💾 [Persistence] Kimi模型已保存: {llm_model}")
+
+            # 保存到持久化存储
+            save_model_selection(st.session_state.llm_provider, st.session_state.model_category, llm_model)
+
+        elif llm_provider == "glm":
+            glm_options = ["glm-4-plus", "glm-4", "glm-4-air", "glm-4-flash"]
+
+            # 获取当前选择的索引
+            current_index = 0
+            if st.session_state.llm_model in glm_options:
+                current_index = glm_options.index(st.session_state.llm_model)
+
+            llm_model = st.selectbox(
+                "选择GLM模型",
+                options=glm_options,
+                index=current_index,
+                format_func=lambda x: {
+                    "glm-4-plus": "GLM-4 Plus - 旗舰版",
+                    "glm-4": "GLM-4 - 标准版",
+                    "glm-4-air": "GLM-4 Air - 轻量版",
+                    "glm-4-flash": "GLM-4 Flash - 快速版"
+                }[x],
+                help="选择用于分析的GLM模型",
+                key="glm_model_select"
+            )
+
+            # 更新session state和持久化存储
+            if st.session_state.llm_model != llm_model:
+                logger.debug(f"🔄 [Persistence] GLM模型变更: {st.session_state.llm_model} → {llm_model}")
+            st.session_state.llm_model = llm_model
+            logger.debug(f"💾 [Persistence] GLM模型已保存: {llm_model}")
+
+            # 保存到持久化存储
+            save_model_selection(st.session_state.llm_provider, st.session_state.model_category, llm_model)
+
+        elif llm_provider == "openrouter":  # openrouter
             # OpenRouter模型分类选择
             model_category = st.selectbox(
                 "模型类别",

@@ -30,7 +30,71 @@ def create_bear_researcher(llm, memory):
         currency = market_info['currency_name']
         currency_symbol = market_info['currency_symbol']
 
-        curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
+        # 获取机构研报观点（重点关注谨慎观点）
+        institutional_caution = ""
+        try:
+            from tradingagents.dataflows.research_report_utils import get_stock_research_reports, get_institutional_consensus
+            
+            # 获取研报数据
+            reports = get_stock_research_reports(company_name, limit=10)  
+            consensus = get_institutional_consensus(company_name)
+            
+            if reports and consensus and consensus.get('total_reports', 0) > 0:
+                # 提取看跌/谨慎观点支撑
+                bearish_reports = [r for r in reports if r.rating in ['卖出', '减持']]
+                neutral_reports = [r for r in reports if r.rating in ['持有', '中性']]
+                
+                if bearish_reports:
+                    institutional_caution = f"""
+
+📉 **机构谨慎观点支撑**：
+- 看跌评级数量: {len(bearish_reports)} 份研报
+- 谨慎机构: {', '.join(set([r.institution for r in bearish_reports[:5]]))}
+
+**核心风险观点**："""
+                    
+                    for i, report in enumerate(bearish_reports[:3], 1):
+                        institutional_caution += f"""
+{i}. **{report.institution}**: {report.rating}
+   - {report.summary}
+   - 风险提示: {', '.join(report.key_points) if report.key_points else '存在下行风险'}"""
+                
+                elif neutral_reports:
+                    institutional_caution = f"""
+
+⚠️ **机构中性观望态度**：
+- 中性评级数量: {len(neutral_reports)} 份研报
+- 观望机构: {', '.join(set([r.institution for r in neutral_reports[:3]]))}
+- 表明机构对前景存在不确定性"""
+                
+                # 分析目标价下行风险
+                if consensus.get('target_price_range', {}).get('min'):
+                    min_target = consensus['target_price_range']['min']
+                    institutional_caution += f"""
+
+📊 **估值风险分析**：
+- 机构目标价下限: {min_target} {currency_symbol}
+- 可能存在下行空间，需谨慎评估风险"""
+                    
+                # 分析机构分歧
+                rating_dist = consensus.get('rating_distribution', {})
+                if len(rating_dist) > 1:
+                    institutional_caution += f"""
+
+🔍 **机构观点分歧**：
+- 评级分布: {rating_dist}
+- 机构间存在明显分歧，增加投资不确定性"""
+                        
+                logger.debug(f"🐻 [看跌研究员] 获取到机构谨慎观点，看跌报告数: {len(bearish_reports)}")
+            else:
+                logger.debug(f"🐻 [看跌研究员] 暂无机构研报数据，将基于其他分析师报告识别风险点")
+                institutional_caution = ""
+                
+        except Exception as e:
+            logger.warning(f"⚠️ [看跌研究员] 获取机构观点失败: {e}")
+            institutional_caution = ""
+
+        curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}{institutional_caution}"
 
         # 安全检查：确保memory不为None
         if memory is not None:
@@ -54,6 +118,9 @@ def create_bear_researcher(llm, memory):
 - 风险和挑战：突出市场饱和、财务不稳定或宏观经济威胁等可能阻碍股票表现的因素
 - 竞争劣势：强调市场地位较弱、创新下降或来自竞争对手威胁等脆弱性
 - 负面指标：使用财务数据、市场趋势或最近不利消息的证据来支持你的立场
+- **机构谨慎观点**：如有机构降级、减持评级或风险提示，请作为专业警示引用
+- **分歧分析**：利用机构间观点分歧说明投资不确定性
+- **估值下行风险**：基于机构目标价下限分析潜在损失空间
 - 反驳看涨观点：用具体数据和合理推理批判性分析看涨论点，揭露弱点或过度乐观的假设
 - 参与讨论：以对话风格呈现你的论点，直接回应看涨分析师的观点并进行有效辩论，而不仅仅是列举事实
 

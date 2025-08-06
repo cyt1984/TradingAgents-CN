@@ -55,6 +55,17 @@ class ConditionalLogic:
             return "tools_fundamentals"
         return "Msg Clear Fundamentals"
 
+    def should_continue_heat(self, state: AgentState):
+        """Determine if heat analysis should continue."""
+        messages = state["messages"]
+        last_message = messages[-1]
+
+        # 热度分析师不需要调用工具，直接进入下一步
+        # 只有AIMessage且有tool_calls时才需要工具调用
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            return "tools_heat"
+        return "Msg Clear Heat"
+
     def should_continue_debate(self, state: AgentState) -> str:
         """Determine if debate should continue."""
 

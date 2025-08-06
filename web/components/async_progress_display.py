@@ -485,13 +485,8 @@ def display_static_progress_with_controls(analysis_id: str, show_refresh_control
                 # 获取默认值，如果是新分析则默认为True
                 default_value = st.session_state.get(auto_refresh_key, True)  # 默认为True
                 auto_refresh = st.checkbox("🔄 自动刷新", value=default_value, key=auto_refresh_key)
-                if auto_refresh and status == 'running':  # 只在运行时自动刷新
-                    import time
-                    time.sleep(3)  # 等待3秒
+                if auto_refresh:  # 只在有数据时检查状态
                     st.rerun()
-                elif auto_refresh and status in ['completed', 'failed']:
-                    # 分析完成后自动关闭自动刷新
-                    st.session_state[auto_refresh_key] = False
 
         return False  # 返回False表示还未完成
 

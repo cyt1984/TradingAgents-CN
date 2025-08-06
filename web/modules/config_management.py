@@ -142,7 +142,7 @@ def render_model_config():
     col1, col2 = st.columns(2)
     
     with col1:
-        new_provider = st.selectbox("供应商", ["dashscope", "openai", "google", "anthropic", "other"], key="new_provider")
+        new_provider = st.selectbox("供应商", ["dashscope", "openai", "google", "anthropic", "deepseek", "kimi", "glm", "other"], key="new_provider")
         new_model_name = st.text_input("模型名称", placeholder="例如: gpt-4, qwen-plus-latest", key="new_model_name")
         new_api_key = st.text_input("API密钥", type="password", key="new_api_key")
 
@@ -394,12 +394,14 @@ def render_system_settings():
     col1, col2 = st.columns(2)
     
     with col1:
+        providers_list = ["dashscope", "openai", "google", "anthropic", "deepseek", "kimi", "glm"]
+        current_provider = settings.get("default_provider", "dashscope")
+        provider_index = providers_list.index(current_provider) if current_provider in providers_list else 0
+        
         default_provider = st.selectbox(
             "默认供应商",
-            ["dashscope", "openai", "google", "anthropic"],
-            index=["dashscope", "openai", "google", "anthropic"].index(
-                settings.get("default_provider", "dashscope")
-            ),
+            providers_list,
+            index=provider_index,
             key="settings_default_provider"
         )
 
@@ -529,14 +531,29 @@ def render_env_status():
 
         with api_col1:
             st.write("**大模型API密钥:**")
+            # 主要大模型提供商
+            main_providers = ["dashscope", "openai", "google", "anthropic"]
             for provider, configured in env_status["api_keys"].items():
-                if provider in ["dashscope", "openai", "google", "anthropic"]:
+                if provider in main_providers:
                     status = "✅ 已配置" if configured else "❌ 未配置"
                     provider_name = {
                         "dashscope": "阿里百炼",
                         "openai": "OpenAI",
                         "google": "Google AI",
                         "anthropic": "Anthropic"
+                    }.get(provider, provider)
+                    st.write(f"- {provider_name}: {status}")
+            
+            # 新增的模型提供商
+            st.write("**新增模型API密钥:**")
+            new_providers = ["deepseek", "kimi", "glm"]
+            for provider, configured in env_status["api_keys"].items():
+                if provider in new_providers:
+                    status = "✅ 已配置" if configured else "❌ 未配置"
+                    provider_name = {
+                        "deepseek": "DeepSeek",
+                        "kimi": "Kimi K2 (月之暗面)",
+                        "glm": "GLM-4.5 (智谱AI)"
                     }.get(provider, provider)
                     st.write(f"- {provider_name}: {status}")
 

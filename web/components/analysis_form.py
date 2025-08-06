@@ -114,10 +114,10 @@ def render_analysis_form():
         # 分析师团队选择
         st.markdown("### 👥 选择分析师团队")
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         # 获取缓存的分析师选择
-        cached_analysts = cached_config.get('selected_analysts', ['market', 'fundamentals']) if cached_config else ['market', 'fundamentals']
+        cached_analysts = cached_config.get('selected_analysts', ['market', 'fundamentals', 'heat']) if cached_config else ['market', 'fundamentals', 'heat']
 
         with col1:
             market_analyst = st.checkbox(
@@ -144,6 +144,13 @@ def render_analysis_form():
                 value='fundamentals' in cached_analysts,
                 help="分析财务数据、公司基本面、估值水平"
             )
+
+        with col3:
+            heat_analyst = st.checkbox(
+                "🔥 热度分析师",
+                value='heat' in cached_analysts,
+                help="分析市场热度、社交媒体关注度、成交量异动"
+            )
         
         # 收集选中的分析师
         selected_analysts = []
@@ -155,6 +162,8 @@ def render_analysis_form():
             selected_analysts.append(("news", "新闻分析师"))
         if fundamentals_analyst:
             selected_analysts.append(("fundamentals", "基本面分析师"))
+        if heat_analyst:
+            selected_analysts.append(("heat", "热度分析师"))
         
         # 显示选择摘要
         if selected_analysts:

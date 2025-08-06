@@ -146,19 +146,73 @@ def create_fundamentals_analyst(llm, toolkit):
                     toolkit.get_simfin_income_stmt,
                 ]
 
-        # 统一的系统提示，适用于所有股票类型
+        # 获取机构一致预期数据
+        institutional_consensus = None
+        try:
+            from tradingagents.dataflows.research_report_utils import get_institutional_consensus
+            institutional_consensus = get_institutional_consensus(ticker)
+            if institutional_consensus and institutional_consensus.get('total_reports', 0) > 0:
+                logger.info(f"📊 [基本面分析师] 成功获取机构一致预期数据: {ticker}")
+                logger.debug(f"📊 [DEBUG] 机构覆盖数量: {institutional_consensus.get('institution_count', 0)}")
+                logger.debug(f"📊 [DEBUG] 平均目标价: {institutional_consensus.get('average_target_price')}")
+            else:
+                logger.info(f"ℹ️ [基本面分析师] 暂无机构研报数据，将基于公开财务数据进行分析: {ticker}")
+                institutional_consensus = None
+        except Exception as e:
+            logger.warning(f"⚠️ [基本面分析师] 获取机构一致预期失败: {e}")
+            institutional_consensus = None
+
+        # 构建机构观点摘要文本
+        institutional_summary = ""
+        if institutional_consensus and institutional_consensus.get('total_reports', 0) > 0:
+            consensus = institutional_consensus
+            institutional_summary = f"""
+            
+📈 **机构一致预期数据**：
+- 研报总数: {consensus.get('total_reports', 0)} 份
+- 覆盖机构数: {consensus.get('institution_count', 0)} 家
+- 平均目标价: {consensus.get('average_target_price', '未知')} {market_info['currency_symbol']}
+"""
+            
+            # 添加评级分布
+            rating_dist = consensus.get('rating_distribution', {})
+            if rating_dist:
+                institutional_summary += f"- 评级分布: "
+                for rating, count in rating_dist.items():
+                    institutional_summary += f"{rating}({count}份) "
+                institutional_summary += "\n"
+            
+            # 添加目标价区间
+            price_range = consensus.get('target_price_range', {})
+            if price_range.get('min') and price_range.get('max'):
+                institutional_summary += f"- 目标价区间: {price_range['min']}-{price_range['max']} {market_info['currency_symbol']}\n"
+            
+            # 添加业绩预测
+            if consensus.get('average_revenue_growth'):
+                institutional_summary += f"- 平均收入增长预测: {consensus['average_revenue_growth']:.1%}\n"
+            if consensus.get('average_profit_growth'):
+                institutional_summary += f"- 平均利润增长预测: {consensus['average_profit_growth']:.1%}\n"
+            
+            # 添加数据源
+            data_sources = consensus.get('data_sources', [])
+            if data_sources:
+                institutional_summary += f"- 数据来源: {', '.join(data_sources)}\n"
+
+        # 统一的系统提示，适用于所有股票类型（包含机构观点）
         system_message = (
             f"你是一位专业的股票基本面分析师。"
             f"⚠️ 绝对强制要求：你必须调用工具获取真实数据！不允许任何假设或编造！"
             f"任务：分析{company_name}（股票代码：{ticker}，{market_info['market_name']}）"
             f"🔴 立即调用 get_stock_fundamentals_unified 工具"
             f"参数：ticker='{ticker}', start_date='{start_date}', end_date='{current_date}', curr_date='{current_date}'"
+            f"{institutional_summary}"
             "📊 分析要求："
             "- 基于真实数据进行深度基本面分析"
             f"- 计算并提供合理价位区间（使用{market_info['currency_name']}{market_info['currency_symbol']}）"
             "- 分析当前股价是否被低估或高估"
             "- 提供基于基本面的目标价位建议"
             "- 包含PE、PB、PEG等估值指标分析"
+            f"- **机构观点参考**：{('如有机构一致预期数据，请与自己的估值进行交叉验证' if institutional_consensus else '当前无机构研报数据，请专注于基本面分析')}"
             "- 结合市场特点进行分析"
             "🌍 语言和货币要求："
             "- 所有分析内容必须使用中文"
@@ -177,6 +231,7 @@ def create_fundamentals_analyst(llm, toolkit):
             "- 等待工具返回真实数据"
             "- 基于真实数据进行分析"
             "- 提供具体的价位区间和目标价"
+            f"- **估值验证**：{('结合机构一致预期进行估值交叉验证' if institutional_consensus else '基于财务数据进行独立估值分析')}"
             "- 使用中文投资建议（买入/持有/卖出）"
             "现在立即开始调用工具！不要说任何其他话！"
         )
@@ -351,22 +406,37 @@ def create_fundamentals_analyst(llm, toolkit):
             
             # 生成基于真实数据的分析报告
             logger.info(f"🔍 [股票代码追踪] 生成分析提示词，使用ticker: '{ticker}', company_name: '{company_name}'")
+            
+            # 构建包含机构观点的分析提示
+            institutional_context = ""
+            if institutional_consensus and institutional_consensus.get('total_reports', 0) > 0:
+                institutional_context = f"""
+
+📈 **机构一致预期参考**：
+{institutional_summary}
+
+**重要要求**：请将上述机构一致预期与你基于基本面数据的估值进行对比分析，如果存在差异请分析可能的原因。
+"""
+            
             analysis_prompt = f"""基于以下真实数据，对{company_name}（股票代码：{ticker}）进行详细的基本面分析：
 
 {combined_data}
+{institutional_context}
 
 请提供：
 1. 公司基本信息分析（{company_name}，股票代码：{ticker}）
 2. 财务状况评估
 3. 盈利能力分析
 4. 估值分析（使用{currency_info}）
-5. 投资建议（买入/持有/卖出）
+5. **机构观点对比**：如有机构数据，请与自己的估值进行交叉验证分析
+6. 投资建议（买入/持有/卖出）
 
 要求：
 - 基于提供的真实数据进行分析
 - 正确使用公司名称"{company_name}"和股票代码"{ticker}"
 - 价格使用{currency_info}
 - 投资建议使用中文
+- 如有机构一致预期数据，必须进行对比分析
 - 分析要详细且专业"""
 
             try:

@@ -27,6 +27,11 @@ class ChinaDataSource(Enum):
     AKSHARE = "akshare"
     BAOSTOCK = "baostock"
     TDX = "tdx"  # 中国股票数据，将被逐步淘汰
+    EASTMONEY = "eastmoney"  # 东方财富
+    TENCENT = "tencent"      # 腾讯财经
+    SINA = "sina"            # 新浪财经
+    XUEQIU = "xueqiu"        # 雪球
+    GUBA = "guba"            # 东方财富股吧
 
 
 

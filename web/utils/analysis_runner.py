@@ -242,6 +242,12 @@ def run_stock_analysis(stock_symbol, analysis_date, analysts, research_depth, ll
             elif llm_provider == "deepseek":
                 config["quick_think_llm"] = "deepseek-chat"  # DeepSeek只有一个模型
                 config["deep_think_llm"] = "deepseek-chat"
+            elif llm_provider == "kimi":
+                config["quick_think_llm"] = "moonshot-v1-32k"  # 使用32K上下文模型
+                config["deep_think_llm"] = "moonshot-v1-128k"
+            elif llm_provider == "glm":
+                config["quick_think_llm"] = "glm-4-flash"  # 使用快速模型
+                config["deep_think_llm"] = "glm-4-plus"
         elif research_depth == 2:  # 2级 - 基础分析
             config["max_debate_rounds"] = 1
             config["max_risk_discuss_rounds"] = 1
@@ -253,6 +259,12 @@ def run_stock_analysis(stock_symbol, analysis_date, analysts, research_depth, ll
             elif llm_provider == "deepseek":
                 config["quick_think_llm"] = "deepseek-chat"
                 config["deep_think_llm"] = "deepseek-chat"
+            elif llm_provider == "kimi":
+                config["quick_think_llm"] = "moonshot-v1-32k"
+                config["deep_think_llm"] = "moonshot-v1-128k"
+            elif llm_provider == "glm":
+                config["quick_think_llm"] = "glm-4"
+                config["deep_think_llm"] = "glm-4-plus"
         elif research_depth == 3:  # 3级 - 标准分析 (默认)
             config["max_debate_rounds"] = 1
             config["max_risk_discuss_rounds"] = 2
@@ -264,6 +276,12 @@ def run_stock_analysis(stock_symbol, analysis_date, analysts, research_depth, ll
             elif llm_provider == "deepseek":
                 config["quick_think_llm"] = "deepseek-chat"
                 config["deep_think_llm"] = "deepseek-chat"
+            elif llm_provider == "kimi":
+                config["quick_think_llm"] = "moonshot-v1-32k"
+                config["deep_think_llm"] = "moonshot-v1-128k"
+            elif llm_provider == "glm":
+                config["quick_think_llm"] = "glm-4"
+                config["deep_think_llm"] = "glm-4-plus"
         elif research_depth == 4:  # 4级 - 深度分析
             config["max_debate_rounds"] = 2
             config["max_risk_discuss_rounds"] = 2
@@ -275,6 +293,12 @@ def run_stock_analysis(stock_symbol, analysis_date, analysts, research_depth, ll
             elif llm_provider == "deepseek":
                 config["quick_think_llm"] = "deepseek-chat"
                 config["deep_think_llm"] = "deepseek-chat"
+            elif llm_provider == "kimi":
+                config["quick_think_llm"] = "moonshot-v1-128k"
+                config["deep_think_llm"] = "moonshot-v1-128k"
+            elif llm_provider == "glm":
+                config["quick_think_llm"] = "glm-4-plus"
+                config["deep_think_llm"] = "glm-4-plus"
         else:  # 5级 - 全面分析
             config["max_debate_rounds"] = 3
             config["max_risk_discuss_rounds"] = 3
@@ -286,6 +310,12 @@ def run_stock_analysis(stock_symbol, analysis_date, analysts, research_depth, ll
             elif llm_provider == "deepseek":
                 config["quick_think_llm"] = "deepseek-chat"
                 config["deep_think_llm"] = "deepseek-chat"
+            elif llm_provider == "kimi":
+                config["quick_think_llm"] = "moonshot-v1-128k"
+                config["deep_think_llm"] = "moonshot-v1-128k"
+            elif llm_provider == "glm":
+                config["quick_think_llm"] = "glm-4-plus"
+                config["deep_think_llm"] = "glm-4-plus"
 
         # 根据LLM提供商设置不同的配置
         if llm_provider == "dashscope":
@@ -300,6 +330,16 @@ def run_stock_analysis(stock_symbol, analysis_date, analysts, research_depth, ll
             config["backend_url"] = "https://openrouter.ai/api/v1"
             logger.info(f"🌐 [OpenRouter] 使用模型: {llm_model}")
             logger.info(f"🌐 [OpenRouter] API端点: https://openrouter.ai/api/v1")
+        elif llm_provider == "kimi":
+            # Kimi使用月之暗面API
+            config["backend_url"] = "https://api.moonshot.cn/v1"
+            logger.info(f"🌙 [Kimi] 使用模型: {llm_model}")
+            logger.info(f"🌙 [Kimi] API端点: https://api.moonshot.cn/v1")
+        elif llm_provider == "glm":
+            # GLM使用智谱AI API
+            config["backend_url"] = "https://open.bigmodel.cn/api/paas/v4"
+            logger.info(f"🧠 [GLM] 使用模型: {llm_model}")
+            logger.info(f"🧠 [GLM] API端点: https://open.bigmodel.cn/api/paas/v4")
 
         # 修复路径问题 - 优先使用环境变量配置
         # 数据目录：优先使用环境变量，否则使用默认路径
@@ -585,6 +625,7 @@ def format_analysis_results(results):
         'fundamentals_report', 
         'sentiment_report',
         'news_report',
+        'heat_report',
         'risk_assessment',
         'investment_plan'
     ]
@@ -656,7 +697,7 @@ def validate_analysis_params(stock_symbol, analysis_date, analysts, research_dep
     if not analysts or len(analysts) == 0:
         errors.append("必须至少选择一个分析师")
     
-    valid_analysts = ['market', 'social', 'news', 'fundamentals']
+    valid_analysts = ['market', 'social', 'news', 'fundamentals', 'heat']
     invalid_analysts = [a for a in analysts if a not in valid_analysts]
     if invalid_analysts:
         errors.append(f"无效的分析师类型: {', '.join(invalid_analysts)}")
@@ -829,6 +870,29 @@ def generate_demo_results(stock_symbol, analysis_date, analysts, research_depth,
 ### 市场影响评估
 - **短期影响**: {'正面' if action == 'BUY' else '负面' if action == 'SELL' else '中性'}
 - **长期影响**: {'积极' if action != 'SELL' else '需观察'}
+
+*注意: 这是演示数据，实际分析需要配置API密钥*
+        """
+
+    if 'heat' in analysts:
+        demo_state['heat_report'] = f"""
+## 🔥 {stock_symbol} 市场热度分析报告
+
+### 热度指标
+- **市场热度**: {'高' if action == 'BUY' else '低' if action == 'SELL' else '中等'}
+- **关注度指数**: {round(random.uniform(50, 95), 0)}
+- **成交量异动**: {'放量' if action == 'BUY' else '缩量' if action == 'SELL' else '平稳'}
+- **搜索热度**: {'上升' if action == 'BUY' else '下降' if action == 'SELL' else '稳定'}
+
+### 社交媒体热度
+- **讨论热度**: {'高涨' if action == 'BUY' else '低迷' if action == 'SELL' else '平稳'}
+- **情感倾向**: {'积极' if action == 'BUY' else '消极' if action == 'SELL' else '中性'}
+- **传播范围**: {'广泛' if action == 'BUY' else '有限' if action == 'SELL' else '一般'}
+
+### 资金流向
+- **主力资金**: {'净流入' if action == 'BUY' else '净流出' if action == 'SELL' else '平衡'}
+- **散户情绪**: {'乐观' if action == 'BUY' else '悲观' if action == 'SELL' else '观望'}
+- **机构动向**: {'增持' if action == 'BUY' else '减持' if action == 'SELL' else '维持'}
 
 *注意: 这是演示数据，实际分析需要配置API密钥*
         """

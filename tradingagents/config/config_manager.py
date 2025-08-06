@@ -99,7 +99,9 @@ class ConfigManager:
             "openai": "OPENAI_API_KEY",
             "google": "GOOGLE_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
-            "deepseek": "DEEPSEEK_API_KEY"
+            "deepseek": "DEEPSEEK_API_KEY",
+            "kimi": "KIMI_API_KEY",
+            "glm": "GLM_API_KEY"
         }
 
         env_key = env_key_map.get(provider.lower())
@@ -186,6 +188,22 @@ class ConfigManager:
                     max_tokens=8000,
                     temperature=0.7,
                     enabled=False
+                ),
+                ModelConfig(
+                    provider="kimi",
+                    model_name="moonshot-v1-8k",
+                    api_key="",
+                    max_tokens=4096,
+                    temperature=0.1,
+                    enabled=False
+                ),
+                ModelConfig(
+                    provider="glm",
+                    model_name="glm-4-plus",
+                    api_key="",
+                    max_tokens=4096,
+                    temperature=0.1,
+                    enabled=False
                 )
             ]
             self.save_models(default_models)
@@ -210,6 +228,17 @@ class ConfigManager:
                 # Google定价 (美元)
                 PricingConfig("google", "gemini-pro", 0.00025, 0.0005, "USD"),
                 PricingConfig("google", "gemini-pro-vision", 0.00025, 0.0005, "USD"),
+
+                # Kimi定价 (人民币)
+                PricingConfig("kimi", "moonshot-v1-8k", 0.012, 0.012, "CNY"),
+                PricingConfig("kimi", "moonshot-v1-32k", 0.024, 0.024, "CNY"),
+                PricingConfig("kimi", "moonshot-v1-128k", 0.06, 0.06, "CNY"),
+
+                # GLM定价 (人民币)
+                PricingConfig("glm", "glm-4-plus", 0.05, 0.15, "CNY"),
+                PricingConfig("glm", "glm-4", 0.01, 0.03, "CNY"),
+                PricingConfig("glm", "glm-4-air", 0.001, 0.002, "CNY"),
+                PricingConfig("glm", "glm-4-flash", 0.001, 0.002, "CNY"),
             ]
             self.save_pricing(default_pricing)
         
@@ -398,6 +427,9 @@ class ConfigManager:
                 "openai": bool(os.getenv("OPENAI_API_KEY")),
                 "google": bool(os.getenv("GOOGLE_API_KEY")),
                 "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
+                "deepseek": bool(os.getenv("DEEPSEEK_API_KEY")),
+                "kimi": bool(os.getenv("KIMI_API_KEY")),
+                "glm": bool(os.getenv("GLM_API_KEY")),
                 "finnhub": bool(os.getenv("FINNHUB_API_KEY")),
             },
             "other_configs": {

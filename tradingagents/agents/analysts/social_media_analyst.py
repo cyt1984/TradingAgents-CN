@@ -5,6 +5,10 @@ import json
 # 导入统一日志系统和分析模块日志装饰器
 from tradingagents.utils.logging_init import get_logger
 from tradingagents.utils.tool_logging import log_analyst_module
+# 导入增强新闻工具
+from tradingagents.tools.enhanced_news_tool import get_enhanced_market_sentiment, get_enhanced_social_discussions
+# 导入股票工具类
+from tradingagents.utils.stock_utils import StockUtils
 logger = get_logger("analysts.social_media")
 
 
@@ -15,31 +19,53 @@ def create_social_media_analyst(llm, toolkit):
         ticker = state["company_of_interest"]
         company_name = state["company_of_interest"]
 
+        # 获取市场信息
+        market_info = StockUtils.get_market_info(ticker)
+        logger.info(f"[社交媒体分析师] 股票类型: {market_info['market_name']}")
+        
+        # 🚀 使用增强社交媒体工具，集成雪球、股吧等数据源
+        logger.info(f"[社交媒体分析师] 使用增强社交媒体工具，整合雪球、东方财富股吧等数据源")
+        
+        enhanced_sentiment_tool = get_enhanced_market_sentiment
+        enhanced_sentiment_tool.name = "get_enhanced_market_sentiment"
+        
+        enhanced_discussions_tool = get_enhanced_social_discussions  
+        enhanced_discussions_tool.name = "get_enhanced_social_discussions"
+        
         if toolkit.config["online_tools"]:
-            tools = [toolkit.get_stock_news_openai]
+            tools = [enhanced_sentiment_tool, enhanced_discussions_tool, toolkit.get_stock_news_openai]
         else:
-            # 优先使用中国社交媒体数据，如果不可用则回退到Reddit
+            # 优先使用增强社交媒体数据，如果不可用则回退到原有工具
             tools = [
+                enhanced_sentiment_tool,
+                enhanced_discussions_tool,
                 toolkit.get_chinese_social_sentiment,
                 toolkit.get_reddit_stock_info,
             ]
+        
+        logger.info(f"[社交媒体分析师] 已加载工具: {[tool.name for tool in tools]}")
 
         system_message = (
             """您是一位专业的中国市场社交媒体和投资情绪分析师，负责分析中国投资者对特定股票的讨论和情绪变化。
 
 您的主要职责包括：
-1. 分析中国主要财经平台的投资者情绪（如雪球、东方财富股吧等）
-2. 监控财经媒体和新闻对股票的报道倾向
-3. 识别影响股价的热点事件和市场传言
-4. 评估散户与机构投资者的观点差异
-5. 分析政策变化对投资者情绪的影响
-6. 评估情绪变化对股价的潜在影响
+1. 🎯 分析中国主要财经平台的投资者情绪（雪球、东方财富股吧等）
+2. 📊 监控社交媒体讨论热度和观点分布
+3. 🔍 识别影响股价的热点事件和市场传言
+4. ⚖️ 评估散户与机构投资者的观点差异
+5. 📈 分析情绪变化对股价的潜在影响
+6. 💡 提供基于情绪分析的投资建议
+
+🚀 **新增数据源优势**：
+- **雪球平台**: 高质量投资者讨论、情绪评分、热门话题
+- **东方财富股吧**: 散户情绪、讨论热度、关键词分析
+- **多源整合**: 综合情绪评分、置信度评估、热度排行
+- **实时数据**: 最新讨论动态、情绪变化趋势
 
 重点关注平台：
-- 财经新闻：财联社、新浪财经、东方财富、腾讯财经
-- 投资社区：雪球、东方财富股吧、同花顺
-- 社交媒体：微博财经大V、知乎投资话题
-- 专业分析：各大券商研报、财经自媒体
+- 🎯 **主力数据源**: 雪球社区、东方财富股吧
+- 📰 **辅助新闻**: 新浪财经、东方财富、腾讯财经  
+- 📊 **分析维度**: 讨论热度、情绪倾向、关键词、互动数据
 
 分析要点：
 - 投资者情绪的变化趋势和原因
