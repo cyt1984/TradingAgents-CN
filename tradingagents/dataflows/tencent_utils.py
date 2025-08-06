@@ -38,7 +38,7 @@ class TencentFinanceProvider:
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         
-        logger.info("✅ 腾讯财经数据提供器初始化成功")
+        logger.info("腾讯财经数据提供器初始化成功")
 
     def _make_request(self, url: str, params: Dict = None, timeout: int = 30) -> Optional[str]:
         """发起HTTP请求，返回原始文本"""
@@ -206,7 +206,7 @@ class TencentFinanceProvider:
             return {}
 
     def get_stock_kline(self, symbol: str, period: str = 'day', count: int = 100) -> Optional[pd.DataFrame]:
-        """获取K线数据"""
+        """获取K线数据 - 使用腾讯财经API"""
         try:
             # 构造腾讯股票代码格式
             if len(symbol) == 6 and symbol.isdigit():
@@ -217,65 +217,67 @@ class TencentFinanceProvider:
             else:
                 tencent_code = symbol.lower()
 
-            # 周期映射
-            period_map = {
-                'day': 'lday',
-                'week': 'lweek', 
-                'month': 'lmonth',
-                '5min': 'm5',
-                '15min': 'm15',
-                '30min': 'm30',
-                '60min': 'm60'
-            }
-            
-            tencent_period = period_map.get(period, 'lday')
-            
+            # 使用更简单的腾讯K线API
             url = f"{self.api_url}/appstock/app/kline/kline"
             params = {
-                '_var': f'kline_{tencent_period}',
-                'param': f'{tencent_code},{tencent_period},,{count}',
-                'r': str(int(time.time()))
+                'param': f'{tencent_code},day,,{count},qfq',
+                '_var': 'kline_day',
+                'r': str(int(time.time() * 1000))
             }
             
             raw_data = self._make_request(url, params)
             if not raw_data:
                 return None
             
-            # 解析JSONP格式的数据
+            # 解析JSONP
             try:
-                start = raw_data.find('{')
-                end = raw_data.rfind('}') + 1
-                json_str = raw_data[start:end]
+                start_idx = raw_data.find('{')
+                if start_idx == -1:
+                    return None
+                    
+                json_str = raw_data[start_idx:].split('\n')[0]  # 清理多余字符
                 data = json.loads(json_str)
                 
-                if 'data' not in data or not data['data']:
+                if 'data' not in data or tencent_code not in data['data']:
+                    return None
+                
+                day_data = data['data'][tencent_code].get('day', [])
+                if not day_data:
                     return None
                 
                 # 转换为DataFrame
-                kline_data = []
-                for item in data['data'][tencent_code][tencent_period]:
-                    kline_data.append({
-                        'date': item[0],
-                        'open': float(item[1]),
-                        'close': float(item[2]),
-                        'high': float(item[3]),
-                        'low': float(item[4]),
-                        'volume': int(item[5])
-                    })
+                df_data = []
+                for item in day_data:
+                    if isinstance(item, list) and len(item) >= 6:
+                        try:
+                            df_data.append({
+                                'date': str(item[0]),
+                                'open': float(item[1]),
+                                'close': float(item[2]),
+                                'high': float(item[3]),
+                                'low': float(item[4]),
+                                'volume': int(item[5])
+                            })
+                        except (ValueError, IndexError):
+                            continue
                 
-                df = pd.DataFrame(kline_data)
+                if not df_data:
+                    return None
+                
+                df = pd.DataFrame(df_data)
                 df['date'] = pd.to_datetime(df['date'])
                 df.set_index('date', inplace=True)
+                df = df.sort_index()
                 
-                logger.info(f"✅ 获取到 {len(df)} 条K线数据: {symbol}")
+                logger.info(f"Retrieved {len(df)} K-line records for {symbol}")
                 return df
                 
-            except json.JSONDecodeError:
-                logger.error(f"❌ 解析K线数据JSON失败: {symbol}")
+            except Exception as e:
+                logger.error(f"Parse K-line data failed: {symbol}, {e}")
                 return None
             
         except Exception as e:
-            logger.error(f"❌ 获取K线数据失败: {symbol}, 错误: {str(e)}")
+            logger.error(f"Get K-line data failed: {symbol}, {e}")
             return None
 
     def get_market_index(self, index_code: str = 'sh000001') -> Optional[Dict[str, Any]]:
