@@ -13,8 +13,14 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import numpy as np
 from collections import defaultdict
+import jieba
+import math
 
-logger = logging.getLogger(__name__)
+# 导入新浪财经数据源
+from ..dataflows.sina_utils import get_sina_provider
+from ..utils.logging_manager import get_logger
+
+logger = get_logger('agents')
 
 
 class SentimentAnalyzer:
@@ -26,18 +32,66 @@ class SentimentAnalyzer:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         
-        # 情感词典
-        self.positive_words = [
-            '看涨', '买入', '强势', '突破', '拉升', '涨停', '利好', '增长', 
-            '上涨', '反弹', '牛市', '机会', '看好', '支撑', '抄底', '抢筹'
-        ]
+        # 初始化新浪财经数据提供器
+        try:
+            self.sina_provider = get_sina_provider()
+        except Exception as e:
+            logger.warning(f"⚠️ 新浪财经数据源初始化失败: {e}")
+            self.sina_provider = None
         
-        self.negative_words = [
-            '看跌', '卖出', '弱势', '跌破', '跳水', '跌停', '利空', '下跌',
-            '暴跌', '熊市', '风险', '看空', '阻力', '割肉', '跑路', '踩踏'
-        ]
+        # 初始化jieba分词
+        jieba.initialize()
         
-        self.neutral_words = ['震荡', '横盘', '观望', '等待', '谨慎']
+        # 扩展的情感词典
+        self.positive_words = set([
+            # 涨幅相关
+            '上涨', '涨停', '涨幅', '大涨', '暴涨', '飙升', '攀升', '走高', '突破', '创新高',
+            '强势', '反弹', '回升', '上扬', '拉升', '冲高', '连涨', '持续上涨',
+            '看涨', '买入', '拉升', '利好', '机会', '看好', '支撑', '抄底', '抢筹',
+            
+            # 业绩相关
+            '增长', '盈利', '收益', '营收', '利润', '业绩', '超预期', '亮眼', '优秀', '出色',
+            '改善', '好转', '提升', '增强', '扩大', '发展', '成功', '突出',
+            
+            # 市场情绪
+            '乐观', '推荐', '持有', '积极', '潜力', '前景', '信心', '稳定', '健康', '强劲',
+            '活跃', '繁荣', '复苏', '向好', '牛市',
+            
+            # 其他积极词汇
+            '领先', '优势', '创新', '合作', '签约', '中标', '获得', '批准', '通过',
+            '完成', '实现', '达成', '建设', '投资', '扩产', '并购', '重组'
+        ])
+        
+        self.negative_words = set([
+            # 跌幅相关
+            '下跌', '跌停', '跌幅', '大跌', '暴跌', '重挫', '下滑', '走低', '破位', '创新低',
+            '弱势', '回调', '调整', '下探', '杀跌', '连跌', '持续下跌', '崩盘',
+            '看跌', '卖出', '跳水', '利空', '风险', '看空', '阻力', '割肉', '跑路', '踩踏',
+            
+            # 业绩相关
+            '亏损', '下降', '减少', '低于', '不及', '逊色', '恶化', '放缓', '萎缩', '收缩',
+            '困难', '挑战', '压力', '问题', '危机', '担忧', '疑虑',
+            
+            # 市场情绪
+            '悲观', '减持', '谨慎', '消极', '威胁', '不利', '恐慌', '动荡', '不稳',
+            '疲软', '低迷', '衰退', '萧条', '熊市',
+            
+            # 其他消极词汇
+            '停产', '停工', '关闭', '退出', '失败', '取消', '延期', '暂停', '中断', '损失',
+            '违规', '处罚', '调查', '诉讼', '纠纷', '争议', '质疑', '否认'
+        ])
+        
+        self.neutral_words = set(['震荡', '横盘', '观望', '等待', '谨慎', '持平', '维持'])
+        
+        # 股票相关关键词
+        self.stock_keywords = set([
+            '股票', '股价', '股市', 'A股', '港股', '美股', '个股', '板块', '指数',
+            '主力', '机构', '散户', '资金', '成交量', '换手率', '市盈率', '市净率'
+        ])
+        
+        # 强化词和否定词
+        self.intensifiers = set(['很', '非常', '极其', '特别', '相当', '十分', '大幅', '显著', '明显'])
+        self.negators = set(['不', '没', '无', '非', '未', '否'])
     
     def analyze_sentiment(self, symbol: str) -> Dict:
         """
@@ -136,41 +190,180 @@ class SentimentAnalyzer:
         return self._get_default_sentiment()
     
     def _analyze_news_sentiment(self, symbol: str) -> Dict:
-        """分析新闻情绪"""
+        """分析新闻情绪（增强版）"""
         try:
-            # 模拟从新浪财经、东方财富等获取新闻
-            news_items = self._get_news_items(symbol)
+            # 从新浪财经获取新闻
+            news_items = []
+            
+            if self.sina_provider:
+                try:
+                    sina_news = self.sina_provider.get_stock_news(symbol, limit=50)
+                    news_items.extend(sina_news)
+                    logger.info(f"✅ 从新浪财经获取到 {len(sina_news)} 条新闻")
+                except Exception as e:
+                    logger.warning(f"⚠️ 新浪财经新闻获取失败: {e}")
+            
+            # 如果没有获取到新闻，使用模拟数据
+            if not news_items:
+                news_items = self._get_news_items(symbol)
+                logger.info("使用模拟新闻数据")
             
             if not news_items:
                 return self._get_default_sentiment()
             
-            # 分析新闻标题情感
-            sentiments = []
+            # 使用增强的文本情感分析
+            sentiment_results = []
+            total_weighted_score = 0.0
+            total_weight = 0.0
+            
             for news in news_items:
-                sentiment = self._analyze_text_sentiment(news['title'])
-                sentiments.append(sentiment)
-            
-            # 计算新闻情感
-            positive_count = sum(1 for s in sentiments if s['label'] == 'positive')
-            negative_count = sum(1 for s in sentiments if s['label'] == 'negative')
-            total = len(sentiments)
-            
-            if total > 0:
-                news_sentiment_score = (positive_count - negative_count) / total * 100
+                title = news.get('title', '')
+                summary = news.get('summary', '')
                 
-                return {
-                    'news_count': total,
-                    'positive_ratio': positive_count / total,
-                    'negative_ratio': negative_count / total,
-                    'sentiment_score': news_sentiment_score,
-                    'sentiment_label': self._get_sentiment_label(news_sentiment_score),
-                    'latest_news': news_items[0] if news_items else None
-                }
+                # 综合标题和摘要进行分析
+                full_text = f"{title} {summary}"
+                
+                # 分析情感
+                sentiment = self._analyze_enhanced_text_sentiment(full_text)
+                
+                # 计算相关性权重
+                relevance_score = news.get('relevance_score', 0.8)
+                time_weight = self._calculate_time_weight(news.get('publish_time', ''))
+                
+                # 综合权重
+                weight = relevance_score * time_weight
+                total_weighted_score += sentiment['sentiment_score'] * weight
+                total_weight += weight
+                
+                sentiment_results.append({
+                    'title': title,
+                    'sentiment_score': sentiment['sentiment_score'],
+                    'confidence': sentiment['confidence'],
+                    'relevance_score': relevance_score,
+                    'time_weight': time_weight,
+                    'source': news.get('source', ''),
+                    'publish_time': news.get('publish_time', '')
+                })
+            
+            # 计算总体情感分数
+            if total_weight > 0:
+                avg_sentiment_score = total_weighted_score / total_weight
+            else:
+                avg_sentiment_score = 0.0
+            
+            # 统计分布
+            positive_count = sum(1 for r in sentiment_results if r['sentiment_score'] > 0.1)
+            negative_count = sum(1 for r in sentiment_results if r['sentiment_score'] < -0.1)
+            neutral_count = len(sentiment_results) - positive_count - negative_count
+            total = len(sentiment_results)
+            
+            # 计算置信度
+            confidence = sum(r['confidence'] for r in sentiment_results) / total if total > 0 else 0.0
+            
+            return {
+                'news_count': total,
+                'positive_count': positive_count,
+                'negative_count': negative_count,
+                'neutral_count': neutral_count,
+                'positive_ratio': positive_count / total if total > 0 else 0,
+                'negative_ratio': negative_count / total if total > 0 else 0,
+                'neutral_ratio': neutral_count / total if total > 0 else 0,
+                'sentiment_score': round(avg_sentiment_score * 100, 2),  # 转换为百分制
+                'confidence': round(confidence, 3),
+                'sentiment_label': self._get_sentiment_label(avg_sentiment_score * 100),
+                'latest_news': news_items[0] if news_items else None,
+                'sentiment_distribution': sentiment_results[:10],  # 前10条新闻的详细分析
+                'data_source': 'sina_finance' if self.sina_provider else 'mock_data'
+            }
             
         except Exception as e:
-            logger.error(f"[ERROR] 新闻情绪分析失败: {e}")
-        
-        return self._get_default_sentiment()
+            logger.error(f"❌ 新闻情绪分析失败: {e}")
+            return self._get_default_sentiment()
+    
+    def _analyze_enhanced_text_sentiment(self, text: str) -> Dict:
+        """增强的文本情感分析"""
+        try:
+            if not text:
+                return {'sentiment_score': 0.0, 'confidence': 0.0}
+            
+            # 文本预处理
+            cleaned_text = self._clean_text(text)
+            
+            # 分词
+            words = list(jieba.cut(cleaned_text))
+            
+            # 计算情感分数
+            sentiment_result = self._calculate_enhanced_sentiment_score(words)
+            
+            # 添加股票相关性权重
+            stock_relevance = self._calculate_stock_relevance(words)
+            
+            # 调整最终得分
+            final_score = sentiment_result['sentiment_score'] * (0.5 + 0.5 * stock_relevance)
+            
+            return {
+                'sentiment_score': round(final_score, 3),
+                'confidence': round(sentiment_result['confidence'], 3),
+                'stock_relevance': round(stock_relevance, 3),
+                'details': sentiment_result['details']
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 增强文本情感分析失败: {str(e)}")
+            return {'sentiment_score': 0.0, 'confidence': 0.0}
+    
+    def _calculate_enhanced_sentiment_score(self, words: List[str]) -> Dict:
+        """计算增强的情感分数"""
+        try:
+            positive_count = 0
+            negative_count = 0
+            total_words = len(words)
+            
+            i = 0
+            while i < len(words):
+                word = words[i]
+                weight = 1.0
+                
+                # 检查前面的强化词
+                if i > 0 and words[i-1] in self.intensifiers:
+                    weight = 1.5
+                elif i > 0 and words[i-1] in self.negators:
+                    weight = -1.0
+                
+                # 计算情感分数
+                if word in self.positive_words:
+                    positive_count += weight
+                elif word in self.negative_words:
+                    negative_count += abs(weight) if weight > 0 else -weight
+                
+                i += 1
+            
+            # 计算最终分数
+            if total_words == 0:
+                sentiment_score = 0.0
+                confidence = 0.0
+            else:
+                # 归一化分数到 [-1, 1] 区间
+                raw_score = (positive_count - negative_count) / total_words
+                sentiment_score = math.tanh(raw_score * 2)  # 使用tanh函数平滑化
+                
+                # 计算置信度
+                total_sentiment_words = abs(positive_count) + abs(negative_count)
+                confidence = min(1.0, total_sentiment_words / max(1, total_words * 0.1))
+            
+            return {
+                'sentiment_score': sentiment_score,
+                'confidence': confidence,
+                'details': {
+                    'positive_count': positive_count,
+                    'negative_count': negative_count,
+                    'total_words': total_words
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 计算增强情感分数失败: {str(e)}")
+            return {'sentiment_score': 0.0, 'confidence': 0.0, 'details': {}}
     
     def _analyze_forum_sentiment(self, symbol: str) -> Dict:
         """分析论坛情绪"""
@@ -484,6 +677,77 @@ class SentimentAnalyzer:
         
         return historical
     
+    def _clean_text(self, text: str) -> str:
+        """清理文本"""
+        try:
+            # 去除HTML标签
+            text = re.sub(r'<[^>]+>', '', text)
+            
+            # 去除特殊字符，保留中文、数字、字母
+            text = re.sub(r'[^\u4e00-\u9fa5\w\s]', '', text)
+            
+            # 去除多余空格
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            return text
+            
+        except Exception:
+            return text
+    
+    def _calculate_stock_relevance(self, words: List[str]) -> float:
+        """计算文本与股票的相关性"""
+        try:
+            stock_word_count = 0
+            
+            for word in words:
+                if word in self.stock_keywords:
+                    stock_word_count += 1
+            
+            # 计算相关性得分
+            relevance = min(1.0, stock_word_count / max(1, len(words) * 0.1))
+            
+            return relevance
+            
+        except Exception:
+            return 0.5
+    
+    def _calculate_time_weight(self, publish_time: str) -> float:
+        """计算时间权重（越新的新闻权重越高）"""
+        try:
+            if not publish_time:
+                return 0.8
+            
+            # 尝试解析时间
+            try:
+                # 假设时间格式类似 "2024-08-06 10:30" 或 "2小时前"
+                if '小时前' in publish_time:
+                    hours_match = re.search(r'(\d+)小时前', publish_time)
+                    if hours_match:
+                        hours = int(hours_match.group(1))
+                        weight = max(0.3, 1.0 - hours / 48.0)  # 48小时内有效
+                    else:
+                        weight = 0.8
+                elif '天前' in publish_time:
+                    days_match = re.search(r'(\d+)天前', publish_time)
+                    if days_match:
+                        days = int(days_match.group(1))
+                        weight = max(0.1, 1.0 - days / 14.0)  # 14天内有效
+                    else:
+                        weight = 0.5
+                elif '-' in publish_time and ':' in publish_time:
+                    # 假设是标准日期格式 YYYY-MM-DD HH:MM
+                    weight = 0.9  # 标准格式给较高权重
+                else:
+                    weight = 0.6
+                
+                return round(weight, 2)
+                
+            except Exception:
+                return 0.6
+                
+        except Exception:
+            return 0.5
+    
     def _get_default_sentiment(self) -> Dict:
         """获取默认情绪数据"""
         return {
@@ -519,6 +783,79 @@ class SentimentAnalyzer:
             'current_sentiment': 0
         }
     
+    def analyze_news_sentiment(self, news_data: List[Dict]) -> Dict:
+        """分析新闻数据的情感"""
+        try:
+            if not news_data:
+                return {
+                    'overall_sentiment': 0.0,
+                    'total_count': 0,
+                    'positive_count': 0,
+                    'negative_count': 0,
+                    'neutral_count': 0,
+                    'positive_ratio': 0.0,
+                    'negative_ratio': 0.0,
+                    'neutral_ratio': 1.0,
+                    'confidence': 0.3
+                }
+            
+            sentiment_scores = []
+            positive_count = 0
+            negative_count = 0
+            neutral_count = 0
+            
+            for news_item in news_data:
+                title = news_item.get('title', '')
+                summary = news_item.get('summary', '')
+                text = f"{title} {summary}".strip()
+                
+                if text:
+                    sentiment_result = self._analyze_enhanced_text_sentiment(text)
+                    score = sentiment_result.get('sentiment_score', 0.0)
+                    sentiment_scores.append(score)
+                    
+                    if score > 0.1:
+                        positive_count += 1
+                    elif score < -0.1:
+                        negative_count += 1
+                    else:
+                        neutral_count += 1
+                else:
+                    sentiment_scores.append(0.0)
+                    neutral_count += 1
+            
+            total_count = len(news_data)
+            overall_sentiment = sum(sentiment_scores) / total_count if total_count > 0 else 0.0
+            
+            # 计算置信度
+            confidence = min(1.0, total_count / 10)  # 10条新闻为满置信度
+            
+            return {
+                'overall_sentiment': round(overall_sentiment, 3),
+                'total_count': total_count,
+                'positive_count': positive_count,
+                'negative_count': negative_count,
+                'neutral_count': neutral_count,
+                'positive_ratio': positive_count / total_count if total_count > 0 else 0.0,
+                'negative_ratio': negative_count / total_count if total_count > 0 else 0.0,
+                'neutral_ratio': neutral_count / total_count if total_count > 0 else 1.0,
+                'confidence': confidence
+            }
+            
+        except Exception as e:
+            logger.error(f"新闻情感分析失败: {e}")
+            return {
+                'overall_sentiment': 0.0,
+                'total_count': 0,
+                'positive_count': 0,
+                'negative_count': 0,
+                'neutral_count': 0,
+                'positive_ratio': 0.0,
+                'negative_ratio': 0.0,
+                'neutral_ratio': 1.0,
+                'confidence': 0.3
+            }
+
     def _get_error_result(self, symbol: str, error: str) -> Dict:
         """获取错误结果"""
         return {

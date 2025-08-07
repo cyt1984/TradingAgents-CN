@@ -235,80 +235,227 @@ class SinaFinanceProvider:
             return {}
 
     def get_stock_news(self, symbol: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """获取股票相关新闻（通过爬取网页获取）"""
+        """获取股票相关新闻（增强版）"""
         try:
-            # 获取股票信息以获得股票名称
+            # 使用多种方式获取新闻
+            all_news = []
+            
+            # 方法1: 通过API获取最新财经新闻
+            api_news = self._get_news_from_api(symbol, limit // 2)
+            all_news.extend(api_news)
+            
+            # 方法2: 通过爬取获取股票专栏新闻  
+            web_news = self._get_news_from_web(symbol, limit // 2)
+            all_news.extend(web_news)
+            
+            # 去重和排序
+            unique_news = self._deduplicate_news(all_news)
+            unique_news.sort(key=lambda x: x.get('publish_time', ''), reverse=True)
+            
+            logger.info(f"✅ 获取到 {len(unique_news)} 条新浪财经新闻: {symbol}")
+            return unique_news[:limit]
+            
+        except Exception as e:
+            logger.error(f"❌ 获取新浪财经新闻失败: {symbol}, 错误: {str(e)}")
+            return []
+
+    def _get_news_from_api(self, symbol: str, limit: int) -> List[Dict[str, Any]]:
+        """通过API获取财经新闻"""
+        try:
+            # 获取股票信息
             stock_info = self.get_stock_info(symbol)
             if not stock_info:
                 return []
             
             stock_name = stock_info['name']
             
-            # 新浪财经搜索页面
-            search_url = f"{self.news_url}/realtime/search.html"
+            # 新浪财经新闻API
+            api_url = f"{self.api_url}/api/openapi.php/NewsService.getNewsByKeywords"
             params = {
-                'keyword': stock_name,
-                'range': 'all',
-                'source': 'all',
-                'time': 'all'
+                'keywords': f"{stock_name},股票,{symbol}",
+                'category': 'finance',
+                'count': limit,
+                'format': 'json'
             }
             
-            response = self.session.get(search_url, params=params, timeout=30)
+            response = self.session.get(api_url, params=params, timeout=30)
+            if response.status_code != 200:
+                return []
+            
+            try:
+                data = response.json()
+                if not data or 'result' not in data:
+                    return []
+                
+                news_list = []
+                for item in data['result'].get('data', []):
+                    news_item = {
+                        'title': item.get('title', ''),
+                        'summary': item.get('intro', ''),
+                        'url': item.get('url', ''),
+                        'publish_time': item.get('ctime', ''),
+                        'source': item.get('media_name', '新浪财经'),
+                        'symbol': symbol,
+                        'relevance_score': self._calculate_relevance(item.get('title', ''), stock_name),
+                        'news_type': 'api'
+                    }
+                    
+                    if news_item['relevance_score'] > 0.3:  # 相关性过滤
+                        news_list.append(news_item)
+                
+                return news_list
+                
+            except json.JSONDecodeError:
+                logger.debug("API响应不是有效JSON")
+                return []
+                
+        except Exception as e:
+            logger.debug(f"⚠️ API获取新闻失败: {str(e)}")
+            return []
+
+    def _get_news_from_web(self, symbol: str, limit: int) -> List[Dict[str, Any]]:
+        """通过网页爬取获取新闻"""
+        try:
+            stock_info = self.get_stock_info(symbol)
+            if not stock_info:
+                return []
+            
+            stock_name = stock_info['name']
+            
+            # 新浪财经股票专栏页面
+            stock_url = f"{self.news_url}/stock/s/{symbol}.shtml"
+            response = self.session.get(stock_url, timeout=30)
             response.encoding = 'utf-8'
             
             if response.status_code != 200:
                 return []
             
             soup = BeautifulSoup(response.text, 'html.parser')
-            news_items = soup.find_all('div', class_='news-item')
             
             news_list = []
-            count = 0
             
-            for item in news_items:
+            # 查找新闻列表
+            news_containers = [
+                soup.find_all('div', class_='news-list'),
+                soup.find_all('ul', class_='news-list'),
+                soup.find_all('div', class_='news-item-list')
+            ]
+            
+            count = 0
+            for container_list in news_containers:
+                for container in container_list:
+                    if count >= limit:
+                        break
+                    
+                    items = container.find_all(['li', 'div'], class_=['news-item', 'item'])
+                    
+                    for item in items:
+                        if count >= limit:
+                            break
+                        
+                        try:
+                            # 提取标题和链接
+                            title_elem = item.find('a') or item.find('h3') or item.find('h4')
+                            if not title_elem:
+                                continue
+                            
+                            title = title_elem.get_text(strip=True)
+                            url = title_elem.get('href', '')
+                            
+                            # 提取时间
+                            time_elem = item.find('span', class_=['time', 'date']) or item.find('time')
+                            publish_time = time_elem.get_text(strip=True) if time_elem else ''
+                            
+                            # 提取摘要
+                            summary_elem = item.find('p') or item.find('div', class_='summary')
+                            summary = summary_elem.get_text(strip=True) if summary_elem else ''
+                            
+                            # 确保链接完整
+                            if url and not url.startswith('http'):
+                                url = f"https://finance.sina.com.cn{url}"
+                            
+                            # 计算相关性
+                            relevance = self._calculate_relevance(title, stock_name)
+                            
+                            if title and relevance > 0.3:
+                                news_item = {
+                                    'title': title,
+                                    'summary': summary,
+                                    'url': url,
+                                    'publish_time': publish_time,
+                                    'source': '新浪财经',
+                                    'symbol': symbol,
+                                    'relevance_score': relevance,
+                                    'news_type': 'web'
+                                }
+                                news_list.append(news_item)
+                                count += 1
+                        
+                        except Exception as e:
+                            logger.debug(f"⚠️ 解析单条新闻失败: {str(e)}")
+                            continue
+                
                 if count >= limit:
                     break
-                
-                try:
-                    title_elem = item.find('h2') or item.find('h3') or item.find('a')
-                    if not title_elem:
-                        continue
-                    
-                    title = title_elem.get_text(strip=True)
-                    url = title_elem.get('href', '')
-                    
-                    time_elem = item.find('span', class_='time') or item.find('time')
-                    publish_time = time_elem.get_text(strip=True) if time_elem else ''
-                    
-                    source_elem = item.find('span', class_='source')
-                    source = source_elem.get_text(strip=True) if source_elem else '新浪财经'
-                    
-                    summary_elem = item.find('p') or item.find('div', class_='summary')
-                    summary = summary_elem.get_text(strip=True) if summary_elem else ''
-                    
-                    if title and stock_name in title:  # 确保新闻与股票相关
-                        news_item = {
-                            'title': title,
-                            'summary': summary,
-                            'url': url if url.startswith('http') else f"https://finance.sina.com.cn{url}",
-                            'publish_time': publish_time,
-                            'source': source,
-                            'symbol': symbol,
-                            'relevance_score': 0.8  # 基础相关性评分
-                        }
-                        news_list.append(news_item)
-                        count += 1
-                
-                except Exception as e:
-                    logger.debug(f"⚠️ 解析单条新闻失败: {str(e)}")
-                    continue
             
-            logger.info(f"✅ 获取到 {len(news_list)} 条新浪财经新闻: {symbol}")
             return news_list
             
         except Exception as e:
-            logger.error(f"❌ 获取新浪财经新闻失败: {symbol}, 错误: {str(e)}")
+            logger.debug(f"⚠️ 网页爬取新闻失败: {str(e)}")
             return []
+
+    def _calculate_relevance(self, title: str, stock_name: str) -> float:
+        """计算新闻与股票的相关性评分"""
+        try:
+            if not title or not stock_name:
+                return 0.0
+            
+            title_lower = title.lower()
+            stock_name_lower = stock_name.lower()
+            
+            score = 0.0
+            
+            # 直接包含股票名称
+            if stock_name_lower in title_lower:
+                score += 0.8
+            
+            # 包含股票相关关键词
+            stock_keywords = ['股票', '股价', '涨停', '跌停', '涨幅', '跌幅', '买入', '卖出', '持股', '股东']
+            for keyword in stock_keywords:
+                if keyword in title_lower:
+                    score += 0.1
+            
+            # 包含财经关键词
+            finance_keywords = ['财报', '业绩', '营收', '利润', '分红', '重组', '并购', '投资']
+            for keyword in finance_keywords:
+                if keyword in title_lower:
+                    score += 0.15
+            
+            return min(1.0, score)
+            
+        except Exception:
+            return 0.5  # 默认中等相关性
+
+    def _deduplicate_news(self, news_list: List[Dict]) -> List[Dict]:
+        """新闻去重"""
+        try:
+            seen_titles = set()
+            unique_news = []
+            
+            for news in news_list:
+                title = news.get('title', '')
+                # 使用标题的前50个字符作为去重依据
+                title_key = title[:50] if len(title) > 50 else title
+                
+                if title_key and title_key not in seen_titles:
+                    seen_titles.add(title_key)
+                    unique_news.append(news)
+            
+            return unique_news
+            
+        except Exception as e:
+            logger.error(f"❌ 新闻去重失败: {str(e)}")
+            return news_list
 
     def get_market_overview(self) -> Dict[str, Any]:
         """获取市场总览"""
@@ -381,6 +528,211 @@ class SinaFinanceProvider:
             logger.error(f"❌ 获取热门股票失败: 错误: {str(e)}")
             return []
 
+    def get_deep_market_data(self, symbol: str) -> Dict[str, Any]:
+        """获取深度行情数据"""
+        try:
+            deep_data = {
+                'symbol': symbol,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'basic_info': {},
+                'depth_quotes': {},
+                'technical_indicators': {},
+                'market_metrics': {}
+            }
+            
+            # 获取基础信息
+            basic_info = self.get_stock_info(symbol)
+            if basic_info:
+                deep_data['basic_info'] = basic_info
+            
+            # 获取深度报价（五档行情）
+            depth_quotes = self._get_depth_quotes(symbol)
+            if depth_quotes:
+                deep_data['depth_quotes'] = depth_quotes
+            
+            # 获取技术指标
+            tech_indicators = self._get_technical_indicators(symbol)
+            if tech_indicators:
+                deep_data['technical_indicators'] = tech_indicators
+            
+            # 获取市场指标
+            market_metrics = self._get_market_metrics(symbol)
+            if market_metrics:
+                deep_data['market_metrics'] = market_metrics
+            
+            logger.info(f"✅ 获取深度行情数据: {symbol}")
+            return deep_data
+            
+        except Exception as e:
+            logger.error(f"❌ 获取深度行情数据失败: {symbol}, 错误: {str(e)}")
+            return {}
+
+    def _get_depth_quotes(self, symbol: str) -> Dict[str, Any]:
+        """获取深度报价数据（五档买卖盘）"""
+        try:
+            stock_info = self.get_stock_info(symbol)
+            if not stock_info:
+                return {}
+            
+            return {
+                'buy_orders': [
+                    {'level': 1, 'price': stock_info.get('bid1', 0), 'volume': stock_info.get('bid1_volume', 0)},
+                    {'level': 2, 'price': stock_info.get('bid2_price', 0), 'volume': stock_info.get('bid2_volume', 0)},
+                    {'level': 3, 'price': stock_info.get('bid3_price', 0), 'volume': stock_info.get('bid3_volume', 0)},
+                    {'level': 4, 'price': stock_info.get('bid4_price', 0), 'volume': stock_info.get('bid4_volume', 0)},
+                    {'level': 5, 'price': stock_info.get('bid5_price', 0), 'volume': stock_info.get('bid5_volume', 0)}
+                ],
+                'sell_orders': [
+                    {'level': 1, 'price': stock_info.get('ask1', 0), 'volume': stock_info.get('ask1_volume', 0)},
+                    {'level': 2, 'price': stock_info.get('ask2_price', 0), 'volume': stock_info.get('ask2_volume', 0)},
+                    {'level': 3, 'price': 0, 'volume': 0},  # 新浪数据有限
+                    {'level': 4, 'price': 0, 'volume': 0},
+                    {'level': 5, 'price': 0, 'volume': 0}
+                ],
+                'spread': stock_info.get('ask1', 0) - stock_info.get('bid1', 0),
+                'total_buy_volume': sum([stock_info.get(f'bid{i}_volume', 0) for i in range(1, 6)]),
+                'total_sell_volume': stock_info.get('ask1_volume', 0) + stock_info.get('ask2_volume', 0)
+            }
+            
+        except Exception as e:
+            logger.debug(f"⚠️ 获取深度报价失败: {str(e)}")
+            return {}
+
+    def _get_technical_indicators(self, symbol: str) -> Dict[str, Any]:
+        """获取技术指标数据"""
+        try:
+            # 构造新浪技术指标API URL
+            if len(symbol) == 6 and symbol.isdigit():
+                sina_code = f"sh{symbol}" if symbol.startswith(('6', '9')) else f"sz{symbol}"
+            else:
+                sina_code = symbol.lower()
+            
+            # 尝试获取技术指标数据（新浪可能不提供API）
+            indicators = {
+                'ma5': 0,      # 5日均线
+                'ma10': 0,     # 10日均线
+                'ma20': 0,     # 20日均线
+                'rsi': 0,      # RSI指标
+                'macd': 0,     # MACD指标
+                'volume_ratio': 0,  # 量比
+                'turnover_rate': 0   # 换手率
+            }
+            
+            # 基于当前价格估算一些基础指标
+            stock_info = self.get_stock_info(symbol)
+            if stock_info:
+                current_price = stock_info.get('current_price', 0)
+                volume = stock_info.get('volume', 0)
+                turnover = stock_info.get('turnover', 0)
+                
+                # 简单估算换手率（需要流通股本数据，这里用估值）
+                if turnover > 0 and current_price > 0:
+                    estimated_shares = turnover / current_price
+                    indicators['turnover_rate'] = (volume / estimated_shares) * 100 if estimated_shares > 0 else 0
+                
+                # 量比估算（当日成交量/最近平均成交量，这里简化处理）
+                indicators['volume_ratio'] = 1.0  # 默认值
+            
+            return indicators
+            
+        except Exception as e:
+            logger.debug(f"⚠️ 获取技术指标失败: {str(e)}")
+            return {}
+
+    def _get_market_metrics(self, symbol: str) -> Dict[str, Any]:
+        """获取市场指标"""
+        try:
+            stock_info = self.get_stock_info(symbol)
+            if not stock_info:
+                return {}
+            
+            current_price = stock_info.get('current_price', 0)
+            high = stock_info.get('high', 0)
+            low = stock_info.get('low', 0)
+            volume = stock_info.get('volume', 0)
+            turnover = stock_info.get('turnover', 0)
+            
+            metrics = {
+                'amplitude': ((high - low) / current_price * 100) if current_price > 0 else 0,  # 振幅
+                'volume_weighted_price': (turnover / volume) if volume > 0 else current_price,    # 成交量加权平均价
+                'relative_position': ((current_price - low) / (high - low)) if (high - low) > 0 else 0.5,  # 相对位置
+                'market_cap_estimate': 0,  # 市值估算（需要股本数据）
+                'liquidity_score': min(10, volume / 1000000),  # 流动性评分（简化）
+                'volatility_score': min(10, ((high - low) / current_price * 100)) if current_price > 0 else 0  # 波动率评分
+            }
+            
+            return metrics
+            
+        except Exception as e:
+            logger.debug(f"⚠️ 获取市场指标失败: {str(e)}")
+            return {}
+
+    def get_historical_data(self, symbol: str, period: str = '1d', limit: int = 100) -> List[Dict[str, Any]]:
+        """获取历史行情数据"""
+        try:
+            # 构造历史数据URL（新浪财经历史数据API）
+            if len(symbol) == 6 and symbol.isdigit():
+                sina_code = f"sh{symbol}" if symbol.startswith(('6', '9')) else f"sz{symbol}"
+            else:
+                sina_code = symbol.lower()
+            
+            # 新浪历史数据API（可能需要调整）
+            api_url = f"{self.api_url}/api/jsonp.php/IO.XSRV2.CallbackList['hqChart']/JS.ChartData.getData"
+            
+            # 时间段参数
+            period_map = {
+                '1d': 'd',
+                '1w': 'w', 
+                '1m': 'm'
+            }
+            
+            params = {
+                'symbol': sina_code,
+                'type': period_map.get(period, 'd'),
+                'count': limit
+            }
+            
+            response = self.session.get(api_url, params=params, timeout=30)
+            if response.status_code != 200:
+                return []
+            
+            # 解析JSONP响应
+            response_text = response.text
+            if 'hqChart' in response_text:
+                # 提取JSON数据（去除JSONP包装）
+                start_index = response_text.find('(') + 1
+                end_index = response_text.rfind(')')
+                json_data = response_text[start_index:end_index]
+                
+                try:
+                    data = json.loads(json_data)
+                    historical_data = []
+                    
+                    for item in data:
+                        if isinstance(item, list) and len(item) >= 6:
+                            historical_data.append({
+                                'date': item[0],
+                                'open': float(item[1]),
+                                'high': float(item[2]),
+                                'low': float(item[3]),
+                                'close': float(item[4]),
+                                'volume': int(item[5]) if len(item) > 5 else 0,
+                                'symbol': symbol
+                            })
+                    
+                    logger.info(f"✅ 获取历史数据 {len(historical_data)} 条: {symbol}")
+                    return historical_data
+                    
+                except json.JSONDecodeError:
+                    logger.debug("历史数据JSON解析失败")
+                    return []
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"❌ 获取历史数据失败: {symbol}, 错误: {str(e)}")
+            return []
+
 
 # 全局实例
 _sina_provider = None
@@ -413,3 +765,11 @@ def get_sina_market_overview() -> Dict[str, Any]:
 def get_sina_hot_stocks(limit: int = 50) -> List[Dict[str, Any]]:
     """获取热门股票"""
     return get_sina_provider().get_hot_stocks(limit)
+
+def get_sina_deep_market_data(symbol: str) -> Dict[str, Any]:
+    """获取深度行情数据"""
+    return get_sina_provider().get_deep_market_data(symbol)
+
+def get_sina_historical_data(symbol: str, period: str = '1d', limit: int = 100) -> List[Dict[str, Any]]:
+    """获取历史行情数据"""
+    return get_sina_provider().get_historical_data(symbol, period, limit)
