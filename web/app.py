@@ -537,8 +537,8 @@ def main():
     st.sidebar.markdown("**🎯 功能导航**")
 
     page = st.sidebar.selectbox(
-        "切换功能模块",
-        ["📊 股票分析", "⚙️ 配置管理", "💾 缓存管理", "💰 Token统计", "📈 历史记录", "🔧 系统状态"],
+        "切换功能模块", 
+        ["📊 股票分析", "🎯 智能选股", "🇨🇳 A股选股", "⚙️ 配置管理", "💾 缓存管理", "💰 Token统计", "📈 历史记录", "🔧 系统状态"],
         label_visibility="collapsed"
     )
 
@@ -546,7 +546,23 @@ def main():
     st.sidebar.markdown("---")
 
     # 根据选择的页面渲染不同内容
-    if page == "⚙️ 配置管理":
+    if page == "🇨🇳 A股选股":
+        try:
+            from components.akshare_stock_selector import render_akshare_stock_selector
+            render_akshare_stock_selector()
+        except ImportError as e:
+            st.error(f"A股选股页面模块加载失败: {e}")
+            st.info("请确保已安装AkShare: pip install akshare")
+        return
+    elif page == "🎯 智能选股":
+        try:
+            from components.stock_selector_page import render_stock_selector_page
+            render_stock_selector_page()
+        except ImportError as e:
+            st.error(f"选股页面模块加载失败: {e}")
+            st.info("请确保已安装所有依赖包")
+        return
+    elif page == "⚙️ 配置管理":
         try:
             from modules.config_management import render_config_management
             render_config_management()
