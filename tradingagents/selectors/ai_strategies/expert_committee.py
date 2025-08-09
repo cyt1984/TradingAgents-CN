@@ -281,57 +281,188 @@ class AIExpertCommittee:
 
     def _extract_score_from_report(self, report: str) -> float:
         """从报告中提取评分"""
-        # 简化实现：基于关键词判断
-        positive_keywords = ['推荐', '买入', '看涨', '积极', '上涨', '增长', '利好']
-        negative_keywords = ['卖出', '看跌', '下跌', '风险', '亏损', '不推荐', '谨慎']
-        
-        positive_count = sum(1 for word in positive_keywords if word in report)
-        negative_count = sum(1 for word in negative_keywords if word in report)
-        
-        # 基础评分
-        if positive_count > negative_count:
-            base_score = 60 + (positive_count - negative_count) * 5
-        elif negative_count > positive_count:
-            base_score = 40 - (negative_count - positive_count) * 5
-        else:
-            base_score = 50
-        
-        return max(0, min(100, base_score))
+        try:
+            # 首先尝试从报告中提取数值评分
+            import re
+            
+            # 查找明确的评分模式
+            score_patterns = [
+                r'评分[:：]\s*(\d+(?:\.\d+)?)',
+                r'得分[:：]\s*(\d+(?:\.\d+)?)',
+                r'分数[:：]\s*(\d+(?:\.\d+)?)',
+                r'(\d+(?:\.\d+)?)分',
+                r'(\d+(?:\.\d+)?)/100',
+                r'综合评分.*?(\d+(?:\.\d+)?)'
+            ]
+            
+            for pattern in score_patterns:
+                matches = re.findall(pattern, report, re.IGNORECASE)
+                if matches:
+                    score = float(matches[0])
+                    # 确保分数在合理范围内
+                    if 0 <= score <= 100:
+                        return score
+                    elif score > 100:  # 可能是百分比
+                        return min(score / 10, 100)
+            
+            # 如果没有找到明确评分，使用关键词分析
+            positive_keywords = ['推荐', '买入', '看涨', '积极', '上涨', '增长', '利好', '强烈推荐', '优秀', '良好']
+            negative_keywords = ['卖出', '看跌', '下跌', '风险', '亏损', '不推荐', '谨慎', '避免', '警告']
+            
+            # 计算关键词权重
+            positive_score = 0
+            negative_score = 0
+            
+            for word in positive_keywords:
+                count = report.count(word)
+                if word in ['强烈推荐', '优秀']:
+                    positive_score += count * 8  # 高权重词
+                elif word in ['推荐', '买入', '看涨']:
+                    positive_score += count * 6
+                else:
+                    positive_score += count * 3
+            
+            for word in negative_keywords:
+                count = report.count(word)
+                if word in ['不推荐', '避免', '警告']:
+                    negative_score += count * 8  # 高权重词
+                elif word in ['卖出', '看跌', '风险']:
+                    negative_score += count * 6
+                else:
+                    negative_score += count * 3
+            
+            # 计算最终评分
+            score_delta = positive_score - negative_score
+            base_score = 50 + score_delta * 2
+            
+            return max(15, min(90, base_score))
+            
+        except Exception as e:
+            logger.debug(f"评分提取失败: {e}")
+            return 50.0  # 默认中性评分
 
     def _extract_confidence_from_report(self, report: str) -> float:
         """从报告中提取置信度"""
-        # 基于报告长度和关键信息密度估算
-        length_factor = min(1.0, len(report) / 500)  # 500字符为基准
-        
-        confidence_keywords = ['确信', '明确', '强烈', '显著', '清晰', '确定']
-        uncertainty_keywords = ['可能', '或许', '不确定', '有待', '需要观察']
-        
-        confidence_boost = sum(0.1 for word in confidence_keywords if word in report)
-        confidence_penalty = sum(0.1 for word in uncertainty_keywords if word in report)
-        
-        confidence = 0.5 + length_factor * 0.3 + confidence_boost - confidence_penalty
-        return max(0.1, min(1.0, confidence))
+        try:
+            import re
+            
+            # 首先尝试从报告中提取明确的置信度数值
+            confidence_patterns = [
+                r'置信度[:：]\s*(\d+(?:\.\d+)?)%',
+                r'信心度[:：]\s*(\d+(?:\.\d+)?)%',
+                r'确信度[:：]\s*(\d+(?:\.\d+)?)%',
+                r'置信度[:：]\s*(\d+(?:\.\d+)?)',
+                r'可信度[:：]\s*(\d+(?:\.\d+)?)'
+            ]
+            
+            for pattern in confidence_patterns:
+                matches = re.findall(pattern, report, re.IGNORECASE)
+                if matches:
+                    confidence = float(matches[0])
+                    if confidence <= 1.0:  # 0-1范围
+                        return max(0.1, min(1.0, confidence))
+                    elif confidence <= 100:  # 百分比形式
+                        return max(0.1, min(1.0, confidence / 100))
+            
+            # 基于内容质量分析计算置信度
+            report_length = len(report)
+            
+            # 基础置信度：基于报告长度
+            if report_length > 800:
+                base_confidence = 0.8
+            elif report_length > 400:
+                base_confidence = 0.7
+            elif report_length > 200:
+                base_confidence = 0.6
+            else:
+                base_confidence = 0.4
+            
+            # 高置信度关键词
+            high_confidence_keywords = ['确信', '明确', '肯定', '强烈', '显著', '清晰', '确定', '毫无疑问']
+            medium_confidence_keywords = ['认为', '预计', '预期', '判断', '分析显示', '数据表明']
+            low_confidence_keywords = ['可能', '或许', '大概', '也许', '不确定', '有待观察', '需要关注']
+            
+            confidence_boost = 0
+            confidence_penalty = 0
+            
+            for word in high_confidence_keywords:
+                confidence_boost += report.count(word) * 0.15
+            
+            for word in medium_confidence_keywords:
+                confidence_boost += report.count(word) * 0.08
+                
+            for word in low_confidence_keywords:
+                confidence_penalty += report.count(word) * 0.12
+            
+            # 数据支撑度分析
+            data_keywords = ['数据', '指标', '财报', '业绩', '统计', '图表', '分析']
+            data_support = sum(report.count(word) for word in data_keywords) * 0.05
+            
+            # 计算最终置信度
+            final_confidence = base_confidence + confidence_boost - confidence_penalty + data_support
+            return max(0.15, min(0.95, final_confidence))
+            
+        except Exception as e:
+            logger.debug(f"置信度提取失败: {e}")
+            return 0.6  # 默认中等置信度
 
     def _extract_recommendation_from_report(self, report: str) -> str:
         """从报告中提取投资建议"""
-        # 建议关键词映射
-        buy_keywords = ['强烈推荐', '买入', '推荐', '增持']
-        hold_keywords = ['持有', '观望', '中性']
-        sell_keywords = ['卖出', '减持', '不推荐']
+        try:
+            import re
+            
+            # 首先查找明确的建议语句
+            recommendation_patterns = [
+                r'建议[:：]\s*(强烈推荐|推荐|买入|增持|持有|观望|减持|卖出)',
+                r'投资建议[:：]\s*(强烈推荐|推荐|买入|增持|持有|观望|减持|卖出)',
+                r'操作建议[:：]\s*(强烈推荐|推荐|买入|增持|持有|观望|减持|卖出)',
+                r'(强烈推荐|推荐|买入|增持|持有|观望|减持|卖出)该股'
+            ]
+            
+            for pattern in recommendation_patterns:
+                matches = re.findall(pattern, report, re.IGNORECASE)
+                if matches:
+                    recommendation = matches[0]
+                    return self._normalize_recommendation(recommendation)
+            
+            # 如果没有找到明确建议，通过关键词权重分析
+            recommendation_weights = {
+                '强烈推荐': ['强烈推荐', '重点推荐', '首推'],
+                '推荐': ['推荐', '买入', '增持', '建议买入', '值得关注'],
+                '持有': ['持有', '维持', '中性', '等待'],
+                '观望': ['观望', '谨慎', '关注', '待定'],
+                '不推荐': ['不推荐', '避免', '减持', '卖出', '建议卖出']
+            }
+            
+            max_weight = 0
+            best_recommendation = '观望'
+            
+            for recommendation, keywords in recommendation_weights.items():
+                weight = sum(report.count(keyword) for keyword in keywords)
+                if weight > max_weight:
+                    max_weight = weight
+                    best_recommendation = recommendation
+            
+            return best_recommendation if max_weight > 0 else '观望'
+            
+        except Exception as e:
+            logger.debug(f"投资建议提取失败: {e}")
+            return '观望'
+    
+    def _normalize_recommendation(self, recommendation: str) -> str:
+        """标准化投资建议"""
+        recommendation = recommendation.strip().lower()
         
-        for keyword in buy_keywords:
-            if keyword in report:
-                return '买入'
-        
-        for keyword in sell_keywords:
-            if keyword in report:
-                return '卖出'
-                
-        for keyword in hold_keywords:
-            if keyword in report:
-                return '持有'
-        
-        return '观望'  # 默认
+        if recommendation in ['强烈推荐', '重点推荐', '首推']:
+            return '强烈推荐'
+        elif recommendation in ['推荐', '买入', '增持', '建议买入']:
+            return '推荐'
+        elif recommendation in ['持有', '维持', '中性']:
+            return '持有'
+        elif recommendation in ['不推荐', '避免', '减持', '卖出', '建议卖出']:
+            return '不推荐'
+        else:
+            return '观望'
 
     def _extract_key_insights_from_report(self, report: str) -> List[str]:
         """从报告中提取关键见解"""

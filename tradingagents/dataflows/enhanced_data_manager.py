@@ -15,6 +15,8 @@ from datetime import datetime
 # 导入日志模块
 from tradingagents.utils.logging_manager import get_logger
 from tradingagents.config.data_source_config import get_data_source_config
+from tradingagents.dataflows.historical_data_manager import get_historical_manager
+from tradingagents.dataflows.stock_master_manager import get_stock_master_manager
 
 logger = get_logger('agents')
 warnings.filterwarnings('ignore')
@@ -54,6 +56,8 @@ class EnhancedDataManager:
         self.providers = {}
         self.provider_status = {}
         self.config = get_data_source_config()
+        self.historical_manager = get_historical_manager()
+        self.stock_master_manager = get_stock_master_manager()
         
         # 初始化所有数据源提供器
         self._init_providers()
@@ -61,6 +65,8 @@ class EnhancedDataManager:
         logger.info("🚀 增强数据源管理器初始化完成")
         logger.info(f"   可用数据源: {list(self.providers.keys())}")
         logger.info(f"   数据源优先级: {self.config.get_priority_order()}")
+        logger.info(f"   历史数据管理器: {self.historical_manager.__class__.__name__}")
+        logger.info(f"   股票信息管理器: {self.stock_master_manager.__class__.__name__}")
         
     def _init_providers(self):
         """初始化所有数据源提供器"""
@@ -119,7 +125,7 @@ class EnhancedDataManager:
             # 按优先级从多个数据源获取价格数据
             priority_order = self.config.get_priority_order()
             price_sources = [source for source in priority_order 
-                           if source in ['eastmoney', 'tencent', 'sina', 'tushare', 'akshare']]
+                           if source in ['eastmoney', 'tencent', 'sina', 'akshare']]
             
             price_data = {}
             valid_sources = 0
@@ -275,6 +281,54 @@ class EnhancedDataManager:
             logger.error(f"❌ 获取社交讨论失败: {symbol}, 错误: {str(e)}")
             return []
 
+    def get_latest_price_data(self, symbol: str) -> Dict[str, Any]:
+        """
+        获取最新价格数据
+        
+        Args:
+            symbol: 股票代码
+            
+        Returns:
+            Dict[str, Any]: 最新价格数据
+        """
+        try:
+            # 使用综合股票信息获取价格数据
+            stock_info = self.get_comprehensive_stock_info(symbol)
+            if stock_info and 'current_price' in stock_info:
+                return {
+                    'symbol': symbol,
+                    'current_price': stock_info.get('current_price', 0),
+                    'open': stock_info.get('open', 0),
+                    'high': stock_info.get('high', 0),
+                    'low': stock_info.get('low', 0),
+                    'prev_close': stock_info.get('prev_close', 0),
+                    'volume': stock_info.get('volume', 0),
+                    'amount': stock_info.get('amount', 0),
+                    'change': stock_info.get('change', 0),
+                    'change_pct': stock_info.get('change_pct', 0),
+                    'timestamp': stock_info.get('timestamp', '')
+                }
+            
+            # 如果综合信息失败，尝试从单个数据源获取
+            for source in ['eastmoney', 'tencent', 'sina']:
+                if source in self.providers and self.provider_status.get(source, False):
+                    try:
+                        provider = self.providers[source]
+                        if hasattr(provider, 'get_stock_info'):
+                            data = provider.get_stock_info(symbol)
+                            if data and data.get('current_price', 0) > 0:
+                                return data
+                    except Exception as e:
+                        logger.debug(f"从{source}获取价格数据失败: {e}")
+                        continue
+            
+            logger.warning(f"⚠️ 无法获取 {symbol} 的价格数据")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ 获取最新价格数据失败: {symbol}, 错误: {str(e)}")
+            return None
+
     def get_market_overview(self) -> Dict[str, Any]:
         """获取市场总览"""
         try:
@@ -341,10 +395,9 @@ class EnhancedDataManager:
             
             # 数据源权重（基于优先级）
             source_weights = {
-                'eastmoney': 0.4,    # 东方财富权重最高
+                'eastmoney': 0.5,    # 东方财富权重最高
                 'tencent': 0.3,      # 腾讯财经
-                'sina': 0.2,         # 新浪财经
-                'tushare': 0.05,     # Tushare
+                'sina': 0.15,        # 新浪财经
                 'akshare': 0.05      # AKShare
             }
             
@@ -439,9 +492,219 @@ class EnhancedDataManager:
             logger.error(f"❌ 新闻去重失败: {str(e)}")
             return news_list
 
+    def get_stock_list(self, market: str = 'A') -> List[Dict[str, str]]:
+        """
+        获取股票列表，优先使用本地存储
+        
+        Args:
+            market: 市场类型，'A'表示A股，'HK'表示港股，'US'表示美股
+            
+        Returns:
+            List[Dict[str, str]]: 股票列表，每个元素包含symbol和name
+        """
+        try:
+            # 1. 首先检查本地存储
+            market_map = {'A': 'A股', 'HK': '港股', 'US': '美股'}
+            local_market = market_map.get(market.upper(), market.upper())
+            
+            stock_list = self.stock_master_manager.load_stock_list(local_market)
+            if stock_list is not None and not stock_list.empty:
+                stocks = []
+                for _, row in stock_list.iterrows():
+                    stocks.append({
+                        'symbol': str(row['symbol']),
+                        'name': str(row['name'])
+                    })
+                logger.info(f"✅ 从本地存储获取{local_market}股票列表，共{len(stocks)}只股票")
+                return stocks
+            
+            # 2. 本地没有，从网络获取
+            logger.info(f"📡 本地无{local_market}股票列表，从网络获取...")
+            
+            network_stocks = []
+            if market.upper() == 'A':
+                # 优先使用AKShare获取A股股票列表
+                if 'akshare' in self.providers and self.provider_status.get('akshare', False):
+                    try:
+                        provider = self.providers['akshare']
+                        if hasattr(provider, 'ak') and provider.ak is not None:
+                            stock_list = provider.ak.stock_info_a_code_name()
+                            if stock_list is not None and not stock_list.empty:
+                                for _, row in stock_list.iterrows():
+                                    network_stocks.append({
+                                        'symbol': str(row['code']),
+                                        'name': str(row['name']),
+                                        'market': 'A股'
+                                    })
+                    except Exception as e:
+                        logger.warning(f"⚠️ AKShare获取A股股票列表失败: {e}")
+                        
+            elif market.upper() == 'HK':
+                # 获取港股列表
+                if 'akshare' in self.providers and self.provider_status.get('akshare', False):
+                    try:
+                        provider = self.providers['akshare']
+                        if hasattr(provider, 'ak') and provider.ak is not None:
+                            stock_list = provider.ak.stock_hk_spot_em()
+                            if stock_list is not None and not stock_list.empty:
+                                for _, row in stock_list.iterrows():
+                                    network_stocks.append({
+                                        'symbol': str(row['代码']).zfill(5),
+                                        'name': str(row['名称']),
+                                        'market': '港股'
+                                    })
+                    except Exception as e:
+                        logger.warning(f"⚠️ AKShare获取港股股票列表失败: {e}")
+            
+            # 3. 保存到本地存储
+            if network_stocks:
+                self.stock_master_manager.save_stock_list(network_stocks)
+                logger.info(f"✅ 已保存{len(network_stocks)}只股票到本地存储")
+                
+                # 返回标准格式
+                result_stocks = [{'symbol': s['symbol'], 'name': s['name']} for s in network_stocks]
+                return result_stocks
+            
+            # 4. 如果所有数据源都失败，返回空列表
+            logger.warning(f"⚠️ 无法获取{local_market}市场股票列表")
+            return []
+            
+        except Exception as e:
+            logger.error(f"❌ 获取股票列表失败: {market}, 错误: {str(e)}")
+            return []
+
     def get_provider_status(self) -> Dict[str, bool]:
         """获取所有数据源状态"""
         return self.provider_status.copy()
+    
+    def get_historical_data(self, symbol: str, start_date: str, end_date: str, 
+                          frequency: str = "daily") -> Optional[pd.DataFrame]:
+        """
+        获取历史价格数据，优先使用本地存储
+        
+        Args:
+            symbol: 股票代码
+            start_date: 开始日期 (YYYY-MM-DD)
+            end_date: 结束日期 (YYYY-MM-DD)
+            frequency: 数据频率 (daily, weekly, monthly)
+            
+        Returns:
+            DataFrame: 历史价格数据或None
+        """
+        try:
+            # 1. 首先检查本地存储
+            local_data = self.historical_manager.load_historical_data(
+                symbol, frequency, start_date, end_date
+            )
+            
+            if local_data is not None and not local_data.empty:
+                logger.info(f"✅ 从本地存储获取{symbol}历史数据: {len(local_data)}条记录")
+                return local_data
+            
+            # 2. 本地没有，从网络获取
+            logger.info(f"📡 本地无{symbol}历史数据，从网络获取...")
+            
+            # 根据市场类型选择合适的获取方式
+            from tradingagents.utils.stock_utils import StockUtils
+            market_info = StockUtils.get_market_info(symbol)
+            
+            network_data = None
+            if market_info['is_china']:
+                # A股使用AKShare
+                if 'akshare' in self.providers and self.provider_status.get('akshare', False):
+                    try:
+                        provider = self.providers['akshare']
+                        if hasattr(provider, 'ak') and provider.ak is not None:
+                            # 获取历史数据
+                            ak = provider.ak
+                            if frequency == 'daily':
+                                network_data = ak.stock_zh_a_hist(symbol, start_date=start_date, end_date=end_date)
+                            elif frequency == 'weekly':
+                                network_data = ak.stock_zh_a_hist(symbol, period="weekly", start_date=start_date, end_date=end_date)
+                            elif frequency == 'monthly':
+                                network_data = ak.stock_zh_a_hist(symbol, period="monthly", start_date=start_date, end_date=end_date)
+                    except Exception as e:
+                        logger.warning(f"⚠️ AKShare获取历史数据失败: {e}")
+            
+            elif market_info['is_hk']:
+                # 港股使用AKShare港股数据
+                if 'akshare' in self.providers and self.provider_status.get('akshare', False):
+                    try:
+                        provider = self.providers['akshare']
+                        if hasattr(provider, 'ak') and provider.ak is not None:
+                            network_data = provider.ak.stock_zh_hk_hist(symbol, start_date=start_date, end_date=end_date)
+                    except Exception as e:
+                        logger.warning(f"⚠️ AKShare获取港股历史数据失败: {e}")
+            
+            # 3. 标准化数据格式并保存到本地存储
+            if network_data is not None and not network_data.empty:
+                # 标准化列名
+                column_mapping = {
+                    '日期': 'date',
+                    '开盘': 'open',
+                    '收盘': 'close',
+                    '最高': 'high',
+                    '最低': 'low',
+                    '成交量': 'volume',
+                    '成交额': 'amount',
+                    '涨跌幅': 'change_pct',
+                    '涨跌额': 'change'
+                }
+                
+                network_data = network_data.rename(columns=column_mapping)
+                
+                # 确保date列是日期格式
+                if 'date' in network_data.columns:
+                    network_data['date'] = pd.to_datetime(network_data['date'])
+                
+                # 保存到本地存储
+                self.historical_manager.save_historical_data(symbol, network_data, frequency)
+                logger.info(f"✅ 已保存{len(network_data)}条历史数据到本地存储")
+                
+                # 过滤日期范围
+                mask = (network_data['date'] >= pd.to_datetime(start_date)) & \
+                       (network_data['date'] <= pd.to_datetime(end_date))
+                return network_data[mask]
+            
+            logger.warning(f"⚠️ 无法获取{symbol}历史数据")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ 获取历史数据失败: {symbol}, 错误: {str(e)}")
+            return None
+    
+    def update_historical_data(self, symbol: str, frequency: str = "daily"):
+        """
+        更新历史数据到最新
+        
+        Args:
+            symbol: 股票代码
+            frequency: 数据频率
+        """
+        try:
+            # 检查现有数据
+            availability = self.historical_manager.get_data_availability(symbol, frequency)
+            
+            if availability['available']:
+                # 获取缺失的日期范围
+                start_date = (datetime.strptime(availability['end_date'], '%Y-%m-%d') + 
+                             pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+                end_date = datetime.now().strftime('%Y-%m-%d')
+            else:
+                # 获取全部历史数据
+                start_date = '2010-01-01'
+                end_date = datetime.now().strftime('%Y-%m-%d')
+            
+            # 获取最新数据
+            new_data = self.get_historical_data(symbol, start_date, end_date, frequency)
+            
+            if new_data is not None and not new_data.empty:
+                logger.info(f"✅ 更新{symbol}历史数据完成: {len(new_data)}条新记录")
+            else:
+                logger.info(f"ℹ️ {symbol}历史数据已是最新")
+                
+        except Exception as e:
+            logger.error(f"❌ 更新历史数据失败: {symbol}, 错误: {str(e)}")
 
     def test_all_providers(self, test_symbol: str = '000001') -> Dict[str, Any]:
         """测试所有数据源"""
@@ -498,3 +761,7 @@ def get_comprehensive_sentiment_data(symbol: str) -> Dict[str, Any]:
 def get_social_discussions_data(symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
     """获取社交讨论数据"""
     return get_enhanced_data_manager().get_social_discussions(symbol, limit)
+
+def get_stock_list_data(market: str = 'A') -> List[Dict[str, str]]:
+    """获取股票列表数据"""
+    return get_enhanced_data_manager().get_stock_list(market)

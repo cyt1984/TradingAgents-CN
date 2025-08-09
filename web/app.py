@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "web"))
 
 # 导入日志模块
 from tradingagents.utils.logging_manager import get_logger
@@ -538,7 +539,7 @@ def main():
 
     page = st.sidebar.selectbox(
         "切换功能模块", 
-        ["📊 股票分析", "🎯 智能选股", "🇨🇳 A股选股", "⚙️ 配置管理", "💾 缓存管理", "💰 Token统计", "📈 历史记录", "🔧 系统状态"],
+        ["📊 股票分析", "🎯 智能选股", "⚙️ 配置管理", "💾 缓存管理", "💰 Token统计", "📈 历史记录", "🔧 系统状态"],
         label_visibility="collapsed"
     )
 
@@ -546,15 +547,7 @@ def main():
     st.sidebar.markdown("---")
 
     # 根据选择的页面渲染不同内容
-    if page == "🇨🇳 A股选股":
-        try:
-            from components.akshare_stock_selector import render_akshare_stock_selector
-            render_akshare_stock_selector()
-        except ImportError as e:
-            st.error(f"A股选股页面模块加载失败: {e}")
-            st.info("请确保已安装AkShare: pip install akshare")
-        return
-    elif page == "🎯 智能选股":
+    if page == "🎯 智能选股":
         try:
             from components.stock_selector_page import render_stock_selector_page
             render_stock_selector_page()

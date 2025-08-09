@@ -23,8 +23,7 @@ class DataSourceConfig:
                 'sina',         # 新浪财经 - 稳定免费
                 'baostock',     # 宝通数据 - 免费基本面
                 'xueqiu',       # 雪球 - 社交+价格
-                'tushare',      # Tushare - 降级备用
-                'akshare',      # AKShare - 最后备用
+                'akshare',      # AKShare - 免费备用
             ],
             
             # 各数据源可用性配置
@@ -33,7 +32,7 @@ class DataSourceConfig:
                 'tencent': True,
                 'sina': True,
                 'xueqiu': True,
-                'tushare': True,
+                'tushare': False,
                 'akshare': True,
             },
             
