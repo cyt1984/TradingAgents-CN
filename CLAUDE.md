@@ -36,7 +36,14 @@ The system uses LangGraph to orchestrate agent interactions in `tradingagents/gr
 - **US stocks**: FinnHub, Yahoo Finance
 - **News**: Google News, enhanced news filtering system
 - **Heat Analysis**: Weibo, Xueqiu, EastMoney, Baidu Index (free APIs)
+- **Dragon-Tiger Board (龙虎榜)**: EastMoney API (real-time data only)
 - **Caching**: Multi-layer caching with Redis and MongoDB
+
+#### Dragon-Tiger Board Data Standards
+- **Data freshness**: Only use data from last 30 trading days maximum
+- **Historical analysis window**: Default 10-15 trading days for trend analysis
+- **Data validation**: Verify publication date matches expected trading day timeline
+- **No demo data**: Never use placeholder data like outdated stocks (e.g., Ping An Bank 000001 from 2024-02-21)
 
 ## Development Commands
 
@@ -217,6 +224,26 @@ LLM models are configured in `tradingagents/default_config.py`. The system suppo
 
 ## Development Notes
 
+### Data Usage Guidelines
+
+**CRITICAL: Production Data Requirements**
+- **NEVER use demo/mock data in production analysis**: All market data analysis must use real, current data from verified sources
+- **Data freshness requirements**: 
+  - Dragon-Tiger Board (龙虎榜) data: Must be within last 30 trading days
+  - Stock prices: Real-time or end-of-day data only
+  - News/sentiment data: Within last 7 days maximum
+- **Data validation mandatory**: Always verify data timestamps and source reliability before analysis
+- **Failure handling**: When real data is unavailable, return empty results rather than fallback to demo data
+- **Time window standards**: For historical analysis, use 10-15 trading days (excluding weekends/holidays)
+
+**Demo Data Usage (Development Only)**
+- Demo data is ONLY permitted for:
+  - Unit testing and development
+  - UI/UX demonstrations without analysis claims
+  - System integration testing
+- Demo data MUST be clearly labeled and never mixed with real analysis
+- Demo data should use obviously fictional identifiers to prevent confusion
+
 ### Testing Strategy
 - Individual test files for specific components
 - Integration tests for full workflows
@@ -240,6 +267,8 @@ LLM models are configured in `tradingagents/default_config.py`. The system suppo
 - Intelligent data source fallback mechanisms  
 - Async progress tracking for long-running analyses
 - Smart Docker image rebuilding to save time
+- **Data quality over performance**: Always prioritize real data accuracy over system responsiveness
+- **Cache expiration policies**: Respect data freshness requirements when implementing caching strategies
 
 ## Heat Analysis Usage Examples
 
@@ -278,3 +307,18 @@ print(f"Market status: {batch_result['market_heat_summary']['market_heat_status'
 ```
 
 This is a mature, production-ready system with extensive Chinese localization and multiple deployment options.
+
+## IMPORTANT REMINDERS
+
+### Data Integrity Requirements
+**⚠️ CRITICAL**: This system is designed for real financial analysis. Always ensure:
+1. **Real data only**: Never use demo/mock data for actual analysis
+2. **Fresh data**: Verify all market data is current and relevant
+3. **Validate timestamps**: Check data publication dates before analysis
+4. **Handle failures gracefully**: Return empty results when real data is unavailable
+
+**📋 龙虎榜 (Dragon-Tiger Board) Specific**:
+- Use 10-15 trading day windows for trend analysis
+- Exclude weekends and holidays from calculations
+- Verify stock listings are genuinely recent (within 30 days)
+- Never include obviously outdated placeholder data

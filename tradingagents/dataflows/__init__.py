@@ -2,6 +2,7 @@
 from .finnhub_utils import get_data_in_range
 from .googlenews_utils import getNewsData
 from .reddit_utils import fetch_top_from_category
+from .longhubang_utils import get_longhubang_provider, LongHuBangProvider, RankingType
 
 # 导入日志模块
 from tradingagents.utils.logging_manager import get_logger
@@ -91,4 +92,8 @@ __all__ = [
     "get_hk_stock_data_unified",
     "get_hk_stock_info_unified",
     "get_stock_data_by_market",
+    # LongHuBang (Dragon Tiger Board) functions
+    "get_longhubang_provider",
+    "LongHuBangProvider",
+    "RankingType",
 ]

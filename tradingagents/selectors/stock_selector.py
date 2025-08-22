@@ -25,6 +25,8 @@ from ..utils.logging_manager import get_logger
 from .ai_strategies.ai_strategy_manager import get_ai_strategy_manager, AIMode, AISelectionConfig
 from .intelligent_sampling import get_intelligent_sampler, SamplingConfig, SamplingStrategy
 from .batch_ai_processor import get_batch_ai_processor, BatchConfig, ProcessingStrategy
+from ..analytics.longhubang_analyzer import get_longhubang_analyzer, LongHuBangAnalysisResult
+from ..dataflows.longhubang_utils import get_longhubang_provider, RankingType
 
 logger = get_logger('agents')
 
@@ -110,6 +112,12 @@ class StockSelector:
         # AI批次处理器
         self.batch_processor = None
         
+        # 龙虎榜分析器
+        self.longhubang_analyzer = None
+        
+        # 龙虎榜数据提供器
+        self.longhubang_provider = None
+        
         # 初始化组件
         self._init_components()
     
@@ -160,6 +168,22 @@ class StockSelector:
             except Exception as batch_error:
                 logger.warning(f"⚠️ AI批次处理器初始化失败: {batch_error}")
                 self.batch_processor = None
+            
+            # 初始化龙虎榜分析器
+            try:
+                self.longhubang_analyzer = get_longhubang_analyzer()
+                logger.info("✅ 龙虎榜分析器初始化成功")
+            except Exception as longhubang_error:
+                logger.warning(f"⚠️ 龙虎榜分析器初始化失败: {longhubang_error}")
+                self.longhubang_analyzer = None
+            
+            # 初始化龙虎榜数据提供器
+            try:
+                self.longhubang_provider = get_longhubang_provider()
+                logger.info("✅ 龙虎榜数据提供器初始化成功")
+            except Exception as provider_error:
+                logger.warning(f"⚠️ 龙虎榜数据提供器初始化失败: {provider_error}")
+                self.longhubang_provider = None
             
         except Exception as e:
             logger.error(f"❌ 组件初始化失败: {e}")
@@ -1328,6 +1352,435 @@ class StockSelector:
         except Exception as e:
             logger.error(f"❌ [选股引擎] 获取当前模型信息失败: {e}")
             return None
+
+    def longhubang_enhanced_select(self, 
+                                  date: str = None,
+                                  ranking_type: RankingType = RankingType.DAILY,
+                                  min_longhubang_score: float = 60.0,
+                                  enable_ai_analysis: bool = True,
+                                  ai_mode: AIMode = AIMode.AI_ENHANCED,
+                                  limit: int = 50) -> SelectionResult:
+        """
+        龙虎榜增强选股 - 基于龙虎榜数据进行股票选择和分析
+        这是解决5000+股票扫描性能问题的核心解决方案
+        
+        Args:
+            date: 查询日期，默认为今天
+            ranking_type: 龙虎榜类型
+            min_longhubang_score: 最小龙虎榜综合评分
+            enable_ai_analysis: 是否启用AI分析
+            ai_mode: AI分析模式
+            limit: 返回结果数量限制
+            
+        Returns:
+            SelectionResult: 龙虎榜增强选股结果
+        """
+        start_time = time.time()
+        logger.info("🐉 开始龙虎榜增强选股...")
+        
+        try:
+            if not self.longhubang_analyzer or not self.longhubang_provider:
+                logger.error("❌ 龙虎榜分析器或数据提供器未初始化")
+                return SelectionResult(
+                    symbols=[],
+                    data=pd.DataFrame(),
+                    summary={'error': '龙虎榜组件未初始化'},
+                    criteria=SelectionCriteria(),
+                    execution_time=time.time() - start_time,
+                    total_candidates=0,
+                    filtered_count=0
+                )
+            
+            # 1. 获取龙虎榜数据 (50-200只股票，相比5000+大幅减少)
+            logger.info(f"📋 获取{date or '今日'}龙虎榜数据...")
+            longhubang_results = self.longhubang_analyzer.get_top_ranking_stocks(
+                date=date,
+                ranking_type=ranking_type,
+                min_score=min_longhubang_score,
+                limit=limit * 3  # 获取3倍数量以便筛选
+            )
+            
+            if not longhubang_results:
+                logger.warning("⚠️ 未获取到符合条件的龙虎榜股票")
+                return SelectionResult(
+                    symbols=[],
+                    data=pd.DataFrame(),
+                    summary={'error': '未获取到龙虎榜数据'},
+                    criteria=SelectionCriteria(),
+                    execution_time=time.time() - start_time,
+                    total_candidates=0,
+                    filtered_count=0
+                )
+            
+            total_candidates = len(longhubang_results)
+            logger.info(f"🎯 获取到{total_candidates}只龙虎榜股票，相比全市场5000+股票大幅减少")
+            
+            # 2. 转换为DataFrame格式
+            longhubang_data_list = []
+            for result in longhubang_results:
+                try:
+                    # 基础股票信息
+                    stock_info = {
+                        'ts_code': result.symbol,
+                        'name': result.name,
+                        'current_price': result.longhubang_data.current_price,
+                        'change_pct': result.longhubang_data.change_pct,
+                        'turnover': result.longhubang_data.turnover,
+                        'turnover_rate': result.longhubang_data.turnover_rate,
+                        
+                        # 龙虎榜评分信息
+                        'longhubang_overall_score': result.score.overall_score,
+                        'longhubang_seat_quality_score': result.score.seat_quality_score,
+                        'longhubang_capital_flow_score': result.score.capital_flow_score,
+                        'longhubang_follow_potential_score': result.score.follow_potential_score,
+                        'longhubang_risk_score': result.score.risk_score,
+                        'longhubang_confidence': result.score.confidence,
+                        
+                        # 市场情绪和操作模式
+                        'market_sentiment': result.market_sentiment.value,
+                        'operation_pattern': result.operation_pattern.value,
+                        
+                        # 投资建议
+                        'investment_suggestion': result.investment_suggestion,
+                        'risk_warning': result.risk_warning,
+                        'follow_recommendation': result.follow_recommendation,
+                        
+                        # 席位分析摘要
+                        'buy_seat_count': len(result.longhubang_data.buy_seats),
+                        'sell_seat_count': len(result.longhubang_data.sell_seats),
+                        'net_inflow': result.longhubang_data.get_net_flow(),
+                        
+                        # 数据质量
+                        'data_quality': result.data_quality,
+                        'analysis_timestamp': result.analysis_timestamp
+                    }
+                    
+                    # 席位分析详情
+                    if result.seat_analysis:
+                        battle_analysis = result.seat_analysis.get('battle_analysis', {})
+                        stock_info.update({
+                            'battle_result': battle_analysis.get('battle_result', ''),
+                            'battle_winner': battle_analysis.get('winner', ''),
+                            'battle_confidence': battle_analysis.get('confidence', 0),
+                            'buy_power': battle_analysis.get('buy_power', 0),
+                            'sell_power': battle_analysis.get('sell_power', 0)
+                        })
+                        
+                        # 协同交易检测
+                        coordination = result.seat_analysis.get('coordination_analysis', {})
+                        stock_info.update({
+                            'coordinated_trading': coordination.get('coordinated', False),
+                            'coordination_confidence': coordination.get('confidence', 0),
+                            'coordination_signals': '; '.join(coordination.get('signals', []))
+                        })
+                    
+                    longhubang_data_list.append(stock_info)
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ 处理龙虎榜数据失败 {result.symbol}: {e}")
+                    continue
+            
+            if not longhubang_data_list:
+                logger.warning("⚠️ 龙虎榜数据处理后为空")
+                return SelectionResult(
+                    symbols=[],
+                    data=pd.DataFrame(),
+                    summary={'error': '龙虎榜数据处理失败'},
+                    criteria=SelectionCriteria(),
+                    execution_time=time.time() - start_time,
+                    total_candidates=total_candidates,
+                    filtered_count=0
+                )
+            
+            # 创建DataFrame
+            stock_data = pd.DataFrame(longhubang_data_list)
+            logger.info(f"✅ 龙虎榜数据转换完成: {len(stock_data)}只股票")
+            
+            # 3. AI增强分析 (可选，仅对龙虎榜股票进行AI分析)
+            if enable_ai_analysis and self.ai_strategy_manager:
+                logger.info(f"🤖 对{len(stock_data)}只龙虎榜股票进行AI增强分析...")
+                
+                ai_config = AISelectionConfig(
+                    ai_mode=ai_mode,
+                    min_ai_score=50.0,  # 龙虎榜股票已经是高质量的，可以放宽AI评分
+                    min_confidence=0.5,
+                    parallel_processing=True,
+                    enable_caching=True,
+                    timeout_seconds=30.0  # 龙虎榜股票数量少，可以给每只股票更多分析时间
+                )
+                
+                stock_data = self._enrich_stock_data_with_ai(stock_data, ai_config)
+                logger.info("✅ 龙虎榜股票AI增强分析完成")
+            
+            # 4. 应用筛选和排序
+            # 按龙虎榜综合评分排序
+            stock_data = stock_data.sort_values(
+                by='longhubang_overall_score', 
+                ascending=False
+            )
+            
+            # 如果启用了AI分析，使用智能综合评分
+            if enable_ai_analysis and 'ai_overall_score' in stock_data.columns:
+                logger.info("🧠 使用龙虎榜+AI综合评分排序")
+                
+                # 龙虎榜评分权重60%，AI评分权重40%
+                longhubang_weight = 0.6
+                ai_weight = 0.4
+                
+                longhubang_scores = stock_data['longhubang_overall_score'].fillna(50)
+                ai_scores = stock_data['ai_overall_score'].fillna(50)
+                
+                stock_data['longhubang_ai_combined_score'] = (
+                    longhubang_scores * longhubang_weight + 
+                    ai_scores * ai_weight
+                )
+                
+                # 按综合评分重新排序
+                stock_data = stock_data.sort_values(
+                    by='longhubang_ai_combined_score', 
+                    ascending=False
+                )
+                logger.info(f"📊 使用龙虎榜({longhubang_weight:.1f})+AI({ai_weight:.1f})综合评分排序")
+            
+            # 5. 限制结果数量
+            if len(stock_data) > limit:
+                stock_data = stock_data.head(limit)
+                logger.info(f"✂️ 限制结果数量为: {limit}")
+            
+            filtered_count = len(stock_data)
+            symbols = stock_data['ts_code'].tolist()
+            
+            # 6. 生成增强摘要
+            summary = self._generate_longhubang_summary(stock_data, total_candidates, filtered_count)
+            
+            execution_time = time.time() - start_time
+            
+            # 创建选股标准对象
+            criteria = SelectionCriteria(
+                filters=[],
+                sort_by='longhubang_ai_combined_score' if enable_ai_analysis else 'longhubang_overall_score',
+                sort_ascending=False,
+                limit=limit,
+                include_scores=True,
+                include_basic_info=True,
+                ai_mode=ai_mode if enable_ai_analysis else AIMode.BASIC
+            )
+            
+            result = SelectionResult(
+                symbols=symbols,
+                data=stock_data,
+                summary=summary,
+                criteria=criteria,
+                execution_time=execution_time,
+                total_candidates=total_candidates,
+                filtered_count=filtered_count
+            )
+            
+            logger.info(f"🎉 龙虎榜增强选股完成: {filtered_count}只股票, 耗时 {execution_time:.2f}秒")
+            logger.info(f"🚀 性能提升: 相比全市场5000+股票扫描，处理时间大幅减少")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ 龙虎榜增强选股失败: {e}")
+            return SelectionResult(
+                symbols=[],
+                data=pd.DataFrame(),
+                summary={'error': str(e)},
+                criteria=SelectionCriteria(),
+                execution_time=time.time() - start_time,
+                total_candidates=0,
+                filtered_count=0
+            )
+    
+    def _generate_longhubang_summary(self, data: pd.DataFrame, total_candidates: int, filtered_count: int) -> Dict[str, Any]:
+        """生成龙虎榜选股统计摘要"""
+        if data.empty:
+            return {
+                'total_candidates': total_candidates,
+                'filtered_count': 0,
+                'success_rate': 0.0,
+                'longhubang_statistics': {},
+                'selection_type': 'longhubang_enhanced'
+            }
+        
+        summary = {
+            'total_candidates': total_candidates,
+            'filtered_count': filtered_count,
+            'success_rate': filtered_count / max(total_candidates, 1) * 100,
+            'selection_type': 'longhubang_enhanced',
+            'data_source': '龙虎榜',
+            'longhubang_statistics': {}
+        }
+        
+        # 龙虎榜特有统计
+        if 'longhubang_overall_score' in data.columns:
+            summary['longhubang_statistics']['average_longhubang_score'] = float(data['longhubang_overall_score'].mean())
+            summary['longhubang_statistics']['max_longhubang_score'] = float(data['longhubang_overall_score'].max())
+            summary['longhubang_statistics']['min_longhubang_score'] = float(data['longhubang_overall_score'].min())
+        
+        # 市场情绪分布
+        if 'market_sentiment' in data.columns:
+            sentiment_counts = data['market_sentiment'].value_counts()
+            summary['sentiment_distribution'] = sentiment_counts.to_dict()
+        
+        # 操作模式分布
+        if 'operation_pattern' in data.columns:
+            pattern_counts = data['operation_pattern'].value_counts()
+            summary['operation_pattern_distribution'] = pattern_counts.to_dict()
+        
+        # 实力对比统计
+        if 'battle_winner' in data.columns:
+            battle_counts = data['battle_winner'].value_counts()
+            summary['battle_result_distribution'] = battle_counts.to_dict()
+        
+        # 协同交易统计
+        if 'coordinated_trading' in data.columns:
+            coordinated_count = data['coordinated_trading'].sum()
+            summary['coordinated_trading_ratio'] = coordinated_count / len(data) if len(data) > 0 else 0
+        
+        # 资金流向统计
+        if 'net_inflow' in data.columns:
+            net_inflow_positive = len(data[data['net_inflow'] > 0])
+            summary['net_inflow_positive_ratio'] = net_inflow_positive / len(data) if len(data) > 0 else 0
+            summary['average_net_inflow'] = float(data['net_inflow'].mean())
+        
+        # 跟随建议分布
+        if 'follow_recommendation' in data.columns:
+            follow_counts = data['follow_recommendation'].value_counts()
+            summary['follow_recommendation_distribution'] = follow_counts.to_dict()
+        
+        return summary
+    
+    def get_longhubang_statistics(self, date: str = None) -> Dict[str, Any]:
+        """
+        获取龙虎榜市场统计信息
+        
+        Args:
+            date: 查询日期
+            
+        Returns:
+            龙虎榜市场统计信息
+        """
+        try:
+            if not self.longhubang_provider:
+                return {'error': '龙虎榜数据提供器未初始化'}
+            
+            return self.longhubang_provider.get_statistics(date)
+            
+        except Exception as e:
+            logger.error(f"❌ 获取龙虎榜统计信息失败: {e}")
+            return {'error': str(e)}
+    
+    def search_seat_activity(self, seat_name: str, days: int = 7) -> List[Dict[str, Any]]:
+        """
+        搜索特定席位的活动记录
+        
+        Args:
+            seat_name: 席位名称(支持模糊匹配)
+            days: 搜索最近几天
+            
+        Returns:
+            席位活动记录列表
+        """
+        try:
+            if not self.longhubang_provider:
+                logger.error("❌ 龙虎榜数据提供器未初始化")
+                return []
+            
+            longhubang_stocks = self.longhubang_provider.search_stocks_by_seat(seat_name, days)
+            
+            # 转换为简化格式
+            activity_records = []
+            for stock_data in longhubang_stocks:
+                record = {
+                    'symbol': stock_data.symbol,
+                    'name': stock_data.name,
+                    'date': stock_data.date,
+                    'change_pct': stock_data.change_pct,
+                    'turnover': stock_data.turnover,
+                    'ranking_reason': stock_data.ranking_reason,
+                    'seat_found_in': '买方' if any(seat_name in seat.seat_name for seat in stock_data.buy_seats) else '卖方'
+                }
+                activity_records.append(record)
+            
+            logger.info(f"✅ 席位活动搜索完成: {seat_name}, 找到{len(activity_records)}条记录")
+            return activity_records
+            
+        except Exception as e:
+            logger.error(f"❌ 搜索席位活动失败: {e}")
+            return []
+    
+    def analyze_seat_influence(self, seat_name: str, days: int = 30) -> Dict[str, Any]:
+        """
+        分析特定席位的市场影响力
+        
+        Args:
+            seat_name: 席位名称
+            days: 分析时间范围
+            
+        Returns:
+            席位影响力分析结果
+        """
+        try:
+            # 获取席位活动记录
+            activity_records = self.search_seat_activity(seat_name, days)
+            
+            if not activity_records:
+                return {
+                    'seat_name': seat_name,
+                    'influence_score': 0,
+                    'activity_count': 0,
+                    'analysis_period': days,
+                    'error': '未找到席位活动记录'
+                }
+            
+            # 计算影响力指标
+            total_activities = len(activity_records)
+            buy_activities = len([r for r in activity_records if r['seat_found_in'] == '买方'])
+            sell_activities = total_activities - buy_activities
+            
+            # 计算平均涨跌幅
+            avg_change_pct = sum(r['change_pct'] for r in activity_records) / total_activities
+            
+            # 计算成功率 (涨跌符合买卖方向的比例)
+            successful_activities = 0
+            for record in activity_records:
+                if record['seat_found_in'] == '买方' and record['change_pct'] > 0:
+                    successful_activities += 1
+                elif record['seat_found_in'] == '卖方' and record['change_pct'] < 0:
+                    successful_activities += 1
+            
+            success_rate = successful_activities / total_activities if total_activities > 0 else 0
+            
+            # 计算影响力评分
+            base_score = 50
+            activity_bonus = min(20, total_activities * 2)  # 活动频率加分
+            success_bonus = success_rate * 30  # 成功率加分
+            influence_score = base_score + activity_bonus + success_bonus
+            
+            analysis_result = {
+                'seat_name': seat_name,
+                'influence_score': round(influence_score, 2),
+                'activity_count': total_activities,
+                'buy_activities': buy_activities,
+                'sell_activities': sell_activities,
+                'success_rate': round(success_rate * 100, 2),
+                'average_change_pct': round(avg_change_pct, 2),
+                'analysis_period': days,
+                'activity_frequency': round(total_activities / days, 2),
+                'recent_activities': activity_records[:5]  # 最近5条记录
+            }
+            
+            logger.info(f"✅ 席位影响力分析完成: {seat_name}, 影响力评分: {influence_score:.2f}")
+            return analysis_result
+            
+        except Exception as e:
+            logger.error(f"❌ 席位影响力分析失败: {e}")
+            return {
+                'seat_name': seat_name,
+                'error': str(e)
+            }
 
 
 # 全局选股引擎实例
