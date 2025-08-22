@@ -101,13 +101,36 @@ docs/README_OPTIMIZATION.md
 # 计划目录 (内部规划文档，不纳入版本控制)
 plan/
 
-# 临时开发调试文件 (不纳入版本控制)
+# 测试和调试文件 (严格禁止提交)
+# 按照CLAUDE.md规范，测试代码不应进入主仓库
+test_*.py
+*_test.py
+demo_*.py
+quick_test.*
+experimental_*.py
+debug_*.py
+temp_*.py
+scratch_*.py
+playground_*.py
+
+# 具体的测试文件 (历史原因存在的文件)
 test_*_conversion.py
-test_*_reports.py
+test_*_reports.py  
 test_*_function.py
 test_export_simple.py
 test_wkhtmltopdf.py
+test_smart_update.py
 COMMIT_SUMMARY.md
+
+# 开发演示和示例文件 (不纳入版本控制)
+scripts/smart_update_demo.py
+DEVELOPMENT_RESUME.md
+
+# 测试目录 (如需要测试，应建立专门的测试框架)
+tests/temp/
+tests/scratch/
+tests/playground/
+**/test_temp/
 
 # Python缓存文件
 *.so

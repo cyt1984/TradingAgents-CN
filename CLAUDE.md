@@ -270,6 +270,35 @@ LLM models are configured in `tradingagents/default_config.py`. The system suppo
 - **Data quality over performance**: Always prioritize real data accuracy over system responsiveness
 - **Cache expiration policies**: Respect data freshness requirements when implementing caching strategies
 
+### Code Version Control Guidelines
+
+**⚠️ CRITICAL: Repository Cleanliness**
+- **NEVER commit test scripts to the main repository**: Test files pollute the codebase and confuse users
+- **Excluded file patterns**:
+  - `test_*.py` - Individual test scripts
+  - `*_test.py` - Test modules  
+  - `demo_*.py` - Demo and example scripts
+  - `quick_test.*` - Quick test files
+  - `experimental_*.py` - Experimental code
+  - Temporary files with obvious test naming patterns
+
+**Test Code Management**
+- **Local testing only**: Keep all test scripts in local development environment
+- **Test directory separation**: If tests are needed, create a dedicated `/tests` directory with clear structure
+- **Documentation over examples**: Prefer comprehensive documentation over example scripts in the repository
+- **Integration tests**: Only commit integration tests that are part of the CI/CD pipeline
+
+**Commit Standards**
+- **Clean commits**: Always review `git status` before committing to ensure no test files are included
+- **Meaningful messages**: Use descriptive commit messages that explain business value, not technical details
+- **File verification**: Double-check that only production code, documentation, and configuration files are committed
+- **No debugging artifacts**: Remove console.log, print statements, and temporary debugging code before commits
+
+**Repository Structure Integrity**
+- **Production-ready only**: Every file in the repository should serve a clear production purpose
+- **Clear separation**: Maintain clean separation between production code and development/testing utilities
+- **User-focused**: Repository should be immediately usable by new developers without confusion from test artifacts
+
 ## Heat Analysis Usage Examples
 
 ### Python API
