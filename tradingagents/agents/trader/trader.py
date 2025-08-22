@@ -36,6 +36,70 @@ def create_trader(llm, memory):
 
         curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
 
+        # 获取实时股价信息用于准确计算目标价格
+        current_stock_price = None
+        price_info_str = "暂无实时股价数据"
+        
+        try:
+            logger.debug(f"💰 [DEBUG] 开始获取{company_name}的实时股价...")
+            
+            if is_china:
+                # A股：尝试获取实时数据
+                try:
+                    import akshare as ak
+                    real_data = ak.stock_zh_a_spot_em()
+                    stock_real = real_data[real_data['代码'] == company_name]
+                    
+                    if not stock_real.empty:
+                        current_stock_price = float(stock_real.iloc[0]['最新价'])
+                        change_pct = stock_real.iloc[0]['涨跌幅']
+                        change_amount = stock_real.iloc[0]['涨跌额']
+                        price_info_str = f"""📊 {company_name} 实时股价信息：
+- 最新价：¥{current_stock_price}
+- 涨跌幅：{change_pct}%
+- 涨跌额：¥{change_amount}
+- 数据来源：东方财富（实时）"""
+                        logger.debug(f"💰 [DEBUG] 获取到A股实时价格: {current_stock_price}")
+                except Exception as e:
+                    logger.debug(f"💰 [DEBUG] A股实时数据获取失败: {e}")
+            
+            # 如果实时数据获取失败，尝试从数据源管理器获取最新数据
+            if current_stock_price is None:
+                try:
+                    from tradingagents.dataflows.data_source_manager import get_data_source_manager
+                    from datetime import datetime, timedelta
+                    
+                    manager = get_data_source_manager()
+                    end_date = datetime.now().strftime('%Y%m%d')
+                    start_date = (datetime.now() - timedelta(days=3)).strftime('%Y%m%d')
+                    
+                    data_str = manager.get_stock_data(company_name, start_date, end_date)
+                    
+                    if data_str and ('最新价格' in data_str or '收盘' in data_str):
+                        import re
+                        # 尝试多种价格模式
+                        price_patterns = [
+                            r'最新价格[：:]?\s*[¥\$￥]?(\d+(?:\.\d+)?)',
+                            r'收盘[：:]?\s*[¥\$￥]?(\d+(?:\.\d+)?)',
+                            r'价格[：:]?\s*[¥\$￥]?(\d+(?:\.\d+)?)',
+                        ]
+                        
+                        for pattern in price_patterns:
+                            price_match = re.search(pattern, data_str)
+                            if price_match:
+                                current_stock_price = float(price_match.group(1))
+                                price_info_str = f"""📊 {company_name} 股价信息：
+- 当前价格：{currency_symbol}{current_stock_price}
+- 数据来源：历史数据（最新）"""
+                                logger.debug(f"💰 [DEBUG] 从数据源获取到价格: {current_stock_price}")
+                                break
+                                
+                except Exception as e:
+                    logger.debug(f"💰 [DEBUG] 数据源获取失败: {e}")
+            
+        except Exception as e:
+            logger.error(f"💰 [ERROR] 获取股价信息失败: {e}")
+        
         # 检查memory是否可用
         if memory is not None:
             logger.warning(f"⚠️ [DEBUG] memory可用，获取历史记忆")
@@ -60,6 +124,13 @@ def create_trader(llm, memory):
 
 ⚠️ 重要提醒：当前分析的股票代码是 {company_name}，请使用正确的货币单位：{currency}（{currency_symbol}）
 
+{price_info_str}
+
+🎯 **目标价格计算基准**：
+{'- 当前股价基准：' + currency_symbol + str(current_stock_price) if current_stock_price else '- 请基于基本面分析中的最新股价数据'}
+- 必须基于真实的当前股价进行目标价格计算
+- 目标价格应该合理反映股票的内在价值和市场预期
+
 🔴 严格要求：
 - 股票代码 {company_name} 的公司名称必须严格按照基本面报告中的真实数据
 - 绝对禁止使用错误的公司名称或混淆不同的股票
@@ -77,11 +148,14 @@ def create_trader(llm, memory):
 5. **详细推理**: 支持决策的具体理由
 
 🎯 目标价位计算指导：
+- **严格基于上述提供的当前股价进行计算**
 - 基于基本面分析中的估值数据（P/E、P/B、DCF等）
 - 参考技术分析的支撑位和阻力位
 - 考虑行业平均估值水平
 - 结合市场情绪和新闻影响
 - 即使市场情绪过热，也要基于合理估值给出目标价
+- **目标价格必须在当前股价的合理范围内（±50%以内）**
+- **如果计算出的目标价格与当前股价差异过大，请重新检查计算逻辑**
 
 特别注意：
 - 如果是中国A股（6位数字代码），请使用人民币（¥）作为价格单位

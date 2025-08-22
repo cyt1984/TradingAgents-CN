@@ -5,13 +5,17 @@ AKShare数据源工具
 """
 
 import pandas as pd
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
+import concurrent.futures
+import threading
+from pathlib import Path
 
 # 导入日志模块
 from tradingagents.utils.logging_manager import get_logger
-logger = get_logger('agents')
+logger = get_logger('akshare')
 warnings.filterwarnings('ignore')
 
 class AKShareProvider:
@@ -407,6 +411,343 @@ class AKShareProvider:
         except Exception as e:
             logger.error(f"❌ AKShare获取{symbol}财务数据失败: {e}")
             return {}
+
+    def get_stock_list(self) -> Optional[pd.DataFrame]:
+        """
+        获取A股股票列表
+        
+        Returns:
+            DataFrame: 包含所有A股股票信息
+        """
+        if not self.connected:
+            return None
+        
+        try:
+            logger.info("🔍 开始获取A股股票列表...")
+            
+            # 获取股票基本信息
+            stock_list = self.ak.stock_info_a_code_name()
+            
+            if stock_list is not None and not stock_list.empty:
+                # 添加标准化的字段
+                stock_list['symbol'] = stock_list['code']
+                stock_list['name'] = stock_list['name']
+                stock_list['market'] = stock_list['code'].apply(self._get_market_from_code)
+                
+                logger.info(f"✅ 获取A股股票列表成功，共 {len(stock_list)} 只股票")
+                return stock_list
+            else:
+                logger.warning("⚠️ 未能获取股票列表")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ 获取股票列表失败: {e}")
+            return None
+
+    def _get_market_from_code(self, code: str) -> str:
+        """根据股票代码判断市场"""
+        if code.startswith(('000', '001', '002', '003', '300')):
+            return 'SZ'  # 深圳
+        elif code.startswith(('600', '601', '603', '605', '688', '689')):
+            return 'SH'  # 上海
+        else:
+            return 'SZ'  # 默认深圳
+
+    def batch_get_stock_data(self, symbols: List[str], start_date: str = None, 
+                           end_date: str = None, max_workers: int = 20,  # 激进优化：提升到20并发
+                           delay: float = 0.1) -> Dict[str, pd.DataFrame]:  # 缩短延迟
+        """
+        批量获取股票历史数据
+        
+        Args:
+            symbols: 股票代码列表
+            start_date: 开始日期 (YYYY-MM-DD)
+            end_date: 结束日期 (YYYY-MM-DD)  
+            max_workers: 最大并发线程数
+            delay: 请求间隔时间（秒）
+            
+        Returns:
+            {symbol: DataFrame} 字典
+        """
+        if not self.connected:
+            logger.error("❌ AKShare未连接")
+            return {}
+        
+        if not symbols:
+            logger.warning("⚠️ 股票代码列表为空")
+            return {}
+        
+        results = {}
+        total = len(symbols)
+        processed = 0
+        failed = 0
+        
+        logger.info(f"🚀 开始批量获取 {total} 只股票的AKShare数据...")
+        logger.info(f"📊 配置: 并发数={max_workers}, 延迟={delay}秒, 日期范围={start_date}到{end_date}")
+        
+        def fetch_single_stock(symbol: str) -> Tuple[str, Optional[pd.DataFrame]]:
+            """获取单个股票数据"""
+            try:
+                # 请求间隔
+                time.sleep(delay)
+                
+                data = self.get_stock_data(symbol, start_date, end_date)
+                return symbol, data
+                
+            except Exception as e:
+                logger.error(f"❌ 批量获取 {symbol} 失败: {e}")
+                return symbol, None
+        
+        # 使用线程池批量处理
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_symbol = {
+                executor.submit(fetch_single_stock, symbol): symbol 
+                for symbol in symbols
+            }
+            
+            # 收集结果
+            for future in concurrent.futures.as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    symbol_result, data = future.result()
+                    if data is not None and not data.empty:
+                        results[symbol_result] = data
+                        processed += 1
+                    else:
+                        failed += 1
+                    
+                    # 进度报告
+                    current = processed + failed
+                    if current % 50 == 0 or current == total:
+                        progress = current / total * 100
+                        logger.info(f"📈 进度: {current}/{total} ({progress:.1f}%) - 成功:{processed} 失败:{failed}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ 处理 {symbol} 结果时失败: {e}")
+                    failed += 1
+        
+        success_rate = processed / total * 100 if total > 0 else 0
+        logger.info(f"✅ AKShare批量获取完成: 总数:{total} 成功:{processed} 失败:{failed} 成功率:{success_rate:.1f}%")
+        
+        return results
+
+    def batch_get_financial_data(self, symbols: List[str], max_workers: int = 10,  # 激进优化：提升到10并发
+                               delay: float = 0.5) -> Dict[str, Dict[str, Any]]:  # 缩短延迟
+        """
+        批量获取财务数据
+        
+        Args:
+            symbols: 股票代码列表
+            max_workers: 最大并发数（财务数据请求较重，建议较小值）
+            delay: 请求间隔（秒）
+            
+        Returns:
+            {symbol: financial_data} 字典
+        """
+        if not self.connected:
+            logger.error("❌ AKShare未连接")
+            return {}
+        
+        results = {}
+        total = len(symbols)
+        processed = 0
+        failed = 0
+        
+        logger.info(f"🚀 开始批量获取 {total} 只股票的财务数据...")
+        
+        def fetch_single_financial(symbol: str) -> Tuple[str, Dict[str, Any]]:
+            """获取单个股票财务数据"""
+            try:
+                time.sleep(delay)  # 财务数据请求间隔较长
+                financial_data = self.get_financial_data(symbol)
+                return symbol, financial_data
+            except Exception as e:
+                logger.error(f"❌ 批量获取 {symbol} 财务数据失败: {e}")
+                return symbol, {}
+        
+        # 使用较小的线程池
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_symbol = {
+                executor.submit(fetch_single_financial, symbol): symbol 
+                for symbol in symbols
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    symbol_result, financial_data = future.result()
+                    if financial_data:
+                        results[symbol_result] = financial_data
+                        processed += 1
+                    else:
+                        failed += 1
+                    
+                    current = processed + failed
+                    if current % 20 == 0 or current == total:
+                        progress = current / total * 100
+                        logger.info(f"📈 财务数据进度: {current}/{total} ({progress:.1f}%) - 成功:{processed} 失败:{failed}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ 处理 {symbol} 财务数据结果时失败: {e}")
+                    failed += 1
+        
+        success_rate = processed / total * 100 if total > 0 else 0
+        logger.info(f"✅ AKShare财务数据批量获取完成: 成功率:{success_rate:.1f}%")
+        
+        return results
+
+    def batch_download_all_stocks(self, start_date: str = None, end_date: str = None,
+                                save_to_file: bool = True, file_path: str = None) -> Dict[str, Any]:
+        """
+        批量下载所有A股历史数据
+        
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            save_to_file: 是否保存到文件
+            file_path: 保存路径
+            
+        Returns:
+            下载统计和数据
+        """
+        # 1. 获取股票列表
+        stock_list = self.get_stock_list()
+        if stock_list is None or stock_list.empty:
+            logger.error("❌ 无法获取股票列表")
+            return {}
+        
+        symbols = stock_list['code'].tolist()
+        logger.info(f"🎯 准备批量下载 {len(symbols)} 只A股数据")
+        
+        # 2. 批量下载数据（使用激进并发优化）
+        stock_data = self.batch_get_stock_data(
+            symbols=symbols,
+            start_date=start_date,
+            end_date=end_date,
+            max_workers=25,  # 激进优化：智能选股专用高并发
+            delay=0.05       # 更短的延迟
+        )
+        
+        # 3. 批量获取基本信息（可选）
+        logger.info("📋 批量获取股票基本信息...")
+        
+        # 4. 统计信息
+        stats = {
+            'total_stocks': len(symbols),
+            'successful_downloads': len(stock_data),
+            'failed_downloads': len(symbols) - len(stock_data),
+            'success_rate': len(stock_data) / len(symbols) * 100 if symbols else 0,
+            'stock_list': stock_list,
+            'download_summary': {}
+        }
+        
+        # 5. 生成下载摘要
+        for symbol, df in stock_data.items():
+            if df is not None and not df.empty:
+                stats['download_summary'][symbol] = {
+                    'records': len(df),
+                    'date_range': f"{df.index.min()} - {df.index.max()}" if not df.empty else "无数据",
+                    'data_size': df.memory_usage(deep=True).sum()
+                }
+        
+        logger.info(f"🎉 AKShare批量下载完成: 成功率 {stats['success_rate']:.1f}%")
+        
+        # 6. 保存到文件（可选）
+        if save_to_file and stock_data:
+            try:
+                if not file_path:
+                    file_path = f"akshare_batch_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
+                
+                import pickle
+                with open(file_path, 'wb') as f:
+                    pickle.dump({
+                        'stats': stats,
+                        'data': stock_data,
+                        'download_time': datetime.now().isoformat()
+                    }, f)
+                
+                logger.info(f"💾 数据已保存到: {file_path}")
+                stats['saved_file'] = file_path
+                
+            except Exception as e:
+                logger.error(f"❌ 保存数据失败: {e}")
+        
+        return {
+            'stats': stats,
+            'data': stock_data
+        }
+
+    def smart_batch_update(self, symbols: List[str], existing_data: Dict[str, pd.DataFrame] = None,
+                         start_date: str = None, end_date: str = None) -> Dict[str, pd.DataFrame]:
+        """
+        智能批量更新 - 只获取缺失的数据
+        
+        Args:
+            symbols: 股票代码列表
+            existing_data: 现有数据 {symbol: DataFrame}
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            更新后的完整数据
+        """
+        if existing_data is None:
+            existing_data = {}
+        
+        # 分析需要更新的股票
+        need_full_download = []  # 需要完整下载
+        need_incremental = []    # 需要增量更新
+        up_to_date = []         # 已是最新
+        
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        
+        for symbol in symbols:
+            if symbol not in existing_data:
+                need_full_download.append(symbol)
+            else:
+                df = existing_data[symbol]
+                if df.empty:
+                    need_full_download.append(symbol)
+                else:
+                    # 检查最新日期
+                    if hasattr(df.index, 'max'):
+                        latest_date = df.index.max().strftime('%Y-%m-%d')
+                    else:
+                        latest_date = df['date'].max() if 'date' in df.columns else start_date
+                    
+                    if latest_date < current_date:
+                        need_incremental.append((symbol, latest_date))
+                    else:
+                        up_to_date.append(symbol)
+        
+        logger.info(f"📊 数据更新分析: 完整下载:{len(need_full_download)} 增量更新:{len(need_incremental)} 最新:{len(up_to_date)}")
+        
+        results = existing_data.copy()
+        
+        # 1. 完整下载
+        if need_full_download:
+            logger.info(f"🔄 完整下载 {len(need_full_download)} 只股票...")
+            full_data = self.batch_get_stock_data(need_full_download, start_date, end_date)
+            results.update(full_data)
+        
+        # 2. 增量更新
+        if need_incremental:
+            logger.info(f"⚡ 增量更新 {len(need_incremental)} 只股票...")
+            for symbol, last_date in need_incremental:
+                # 从最后日期的下一天开始
+                next_date = (datetime.strptime(last_date, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+                new_data = self.get_stock_data(symbol, next_date, end_date)
+                
+                if new_data is not None and not new_data.empty:
+                    # 合并数据
+                    if symbol in results:
+                        results[symbol] = pd.concat([results[symbol], new_data]).drop_duplicates()
+                    else:
+                        results[symbol] = new_data
+        
+        logger.info(f"✅ 智能批量更新完成，总计 {len(results)} 只股票有数据")
+        return results
 
 def get_akshare_provider() -> AKShareProvider:
     """获取AKShare提供器实例"""

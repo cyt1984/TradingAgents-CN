@@ -23,6 +23,8 @@ from ..analytics.data_fusion_engine import get_fusion_engine
 from ..dataflows.enhanced_data_manager import EnhancedDataManager
 from ..utils.logging_manager import get_logger
 from .ai_strategies.ai_strategy_manager import get_ai_strategy_manager, AIMode, AISelectionConfig
+from .intelligent_sampling import get_intelligent_sampler, SamplingConfig, SamplingStrategy
+from .batch_ai_processor import get_batch_ai_processor, BatchConfig, ProcessingStrategy
 
 logger = get_logger('agents')
 
@@ -40,6 +42,10 @@ class SelectionCriteria:
     # AI增强选项
     ai_mode: AIMode = AIMode.BASIC                               # AI模式
     ai_config: Optional[AISelectionConfig] = None               # AI配置
+    
+    # 智能采样选项
+    enable_smart_sampling: bool = True                           # 启用智能采样
+    sampling_config: Optional[SamplingConfig] = None            # 采样配置
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
@@ -98,6 +104,12 @@ class StockSelector:
         # AI策略管理器
         self.ai_strategy_manager = None
         
+        # 智能采样器
+        self.intelligent_sampler = None
+        
+        # AI批次处理器
+        self.batch_processor = None
+        
         # 初始化组件
         self._init_components()
     
@@ -124,6 +136,30 @@ class StockSelector:
             except Exception as ai_error:
                 logger.warning(f"⚠️ AI策略管理器初始化失败，将使用基础模式: {ai_error}")
                 self.ai_strategy_manager = None
+            
+            # 初始化智能采样器
+            try:
+                self.intelligent_sampler = get_intelligent_sampler()
+                logger.info("✅ 智能采样器初始化成功")
+            except Exception as sampling_error:
+                logger.warning(f"⚠️ 智能采样器初始化失败: {sampling_error}")
+                self.intelligent_sampler = None
+            
+            # 初始化AI批次处理器
+            try:
+                batch_config = BatchConfig(
+                    batch_size=20,
+                    max_workers=8,
+                    strategy=ProcessingStrategy.HYBRID,
+                    enable_progress_tracking=True,
+                    enable_auto_scaling=True,
+                    cache_results=True
+                )
+                self.batch_processor = get_batch_ai_processor(batch_config)
+                logger.info("✅ AI批次处理器初始化成功")
+            except Exception as batch_error:
+                logger.warning(f"⚠️ AI批次处理器初始化失败: {batch_error}")
+                self.batch_processor = None
             
         except Exception as e:
             logger.error(f"❌ 组件初始化失败: {e}")
@@ -309,107 +345,135 @@ class StockSelector:
             
             logger.info(f"🤖 发现 {available_engines} 个可用AI引擎")
             
-            # 准备股票数据列表
-            stock_list = []
+            # 准备股票代码列表
+            stock_symbols = []
+            stock_symbol_to_data = {}
+            
             for _, row in stock_data.iterrows():
-                stock_info = row.to_dict()
-                # 获取额外的股票数据
-                symbol = stock_info.get('ts_code', '')
+                symbol = row.get('ts_code', '')
                 if symbol:
+                    stock_symbols.append(symbol)
+                    stock_info = row.to_dict()
+                    
+                    # 获取额外的股票数据
                     try:
-                        # 获取基础数据
                         if hasattr(self, 'data_manager') and self.data_manager:
                             basic_data = self.data_manager.get_latest_price_data(symbol)
                             if basic_data:
                                 stock_info.update(basic_data)
                     except Exception as e:
                         logger.debug(f"获取 {symbol} 基础数据失败: {e}")
-                
-                stock_list.append(stock_info)
+                    
+                    stock_symbol_to_data[symbol] = stock_info
             
-            # 动态调整批次大小
-            total_stocks = len(stock_list)
-            if total_stocks <= 10:
-                batch_size = total_stocks  # 小批量直接处理
-            elif total_stocks <= 50:
-                batch_size = 10
-            elif total_stocks <= 200:
-                batch_size = 15
-            else:
-                batch_size = 20
-            
-            logger.info(f"🤖 使用批次大小: {batch_size}，总批次: {(total_stocks + batch_size - 1) // batch_size}")
-            
+            # 使用新的批次处理器进行AI分析
             ai_results = []
-            successful_batches = 0
-            failed_batches = 0
-            
-            for i in range(0, len(stock_list), batch_size):
-                batch = stock_list[i:i + batch_size]
-                batch_num = i // batch_size + 1
+            if self.batch_processor and stock_symbols:
+                logger.info(f"🚀 使用AI批次处理器分析 {len(stock_symbols)} 只股票...")
                 
-                try:
-                    logger.debug(f"🤖 处理批次 {batch_num}：{len(batch)} 只股票")
-                    
-                    # 准备市场数据（如果需要）
-                    market_data = None
-                    if ai_config.market_data_required:
-                        try:
-                            # 简单的市场数据（可以后续扩展）
-                            market_data = {
-                                'market_type': 'A股',
-                                'timestamp': datetime.now(),
-                                'news_data': []  # 可以添加新闻数据
-                            }
-                        except Exception:
-                            market_data = None
-                    
-                    batch_results = self.ai_strategy_manager.batch_analyze_stocks(
-                        batch, market_data=market_data, config=ai_config
-                    )
-                    
-                    if batch_results:
-                        ai_results.extend(batch_results)
-                        successful_batches += 1
-                        logger.debug(f"✅ 批次 {batch_num} 处理成功，获得 {len(batch_results)} 个分析结果")
-                    else:
-                        logger.warning(f"⚠️ 批次 {batch_num} 返回空结果")
-                        failed_batches += 1
+                # 定义分析回调函数
+                def ai_analysis_callback(symbol: str) -> Dict[str, Any]:
+                    """AI分析回调函数"""
+                    try:
+                        stock_info = stock_symbol_to_data.get(symbol, {})
                         
-                except Exception as e:
-                    logger.warning(f"❌ AI批量分析失败 (批次 {batch_num}): {e}")
-                    failed_batches += 1
-                    
-                    # 为失败的批次创建默认结果
-                    for stock_info in batch:
-                        symbol = stock_info.get('ts_code', stock_info.get('symbol', ''))
-                        # 创建简单的默认结果对象
-                        default_result = type('AIResult', (), {
+                        # 准备市场数据（如果需要）
+                        market_data = None
+                        if ai_config.market_data_required:
+                            try:
+                                market_data = {
+                                    'market_type': 'A股',
+                                    'timestamp': datetime.now(),
+                                    'news_data': []
+                                }
+                            except Exception:
+                                market_data = None
+                        
+                        # 调用AI策略管理器进行分析
+                        batch_results = self.ai_strategy_manager.batch_analyze_stocks(
+                            [stock_info], market_data=market_data, config=ai_config
+                        )
+                        
+                        if batch_results and len(batch_results) > 0:
+                            return {
+                                'symbol': symbol,
+                                'ai_result': batch_results[0],
+                                'success': True
+                            }
+                        else:
+                            return {
+                                'symbol': symbol,
+                                'ai_result': None,
+                                'success': False,
+                                'error': 'AI分析返回空结果'
+                            }
+                            
+                    except Exception as e:
+                        logger.debug(f"AI分析回调失败 {symbol}: {e}")
+                        return {
                             'symbol': symbol,
-                            'overall_score': enriched_data.loc[enriched_data.get('ts_code', '') == symbol, 'overall_score'].iloc[0] if 'overall_score' in enriched_data.columns and len(enriched_data.loc[enriched_data.get('ts_code', '') == symbol]) > 0 else 50.0,
-                            'confidence_level': 0.2,
-                            'recommendation': '数据不足',
-                            'risk_assessment': 'AI分析失败',
-                            'expert_committee_score': None,
-                            'adaptive_strategy_score': None,
-                            'pattern_recognition_score': None,
-                            'market_regime': None,
-                            'detected_patterns': [],
-                            'key_factors': ['AI分析失败'],
-                            'processing_time': 0.0
-                        })()
+                            'ai_result': None,
+                            'success': False,
+                            'error': str(e)
+                        }
+                
+                # 执行批量处理
+                processing_report = self.batch_processor.process_stocks(
+                    stock_symbols, 
+                    analysis_callback=ai_analysis_callback
+                )
+                
+                # 处理批次处理结果
+                for symbol in stock_symbols:
+                    # 从批处理器的缓存中获取结果
+                    if hasattr(self.batch_processor, '_results_cache') and symbol in self.batch_processor._results_cache:
+                        batch_result = self.batch_processor._results_cache[symbol]
+                        if batch_result.success and batch_result.analysis_result:
+                            # 提取社交信号数据
+                            if 'social_signals' in batch_result.analysis_result:
+                                idx = enriched_data[enriched_data['ts_code'] == symbol].index
+                                if len(idx) > 0:
+                                    enriched_data.at[idx[0], 'social_signals'] = ','.join(batch_result.analysis_result['social_signals'])
+                            
+                            # 提取社交评分数据
+                            if 'analyst_results' in batch_result.analysis_result and 'social' in batch_result.analysis_result['analyst_results']:
+                                social_data = batch_result.analysis_result['analyst_results']['social']
+                                idx = enriched_data[enriched_data['ts_code'] == symbol].index
+                                if len(idx) > 0:
+                                    enriched_data.at[idx[0], 'social_score'] = social_data.get('social_score', 50)
+                                    xueqiu_data = social_data.get('xueqiu_sentiment', {})
+                                    enriched_data.at[idx[0], 'social_heat'] = xueqiu_data.get('total_discussions', 0)
+                                    enriched_data.at[idx[0], 'social_sentiment'] = xueqiu_data.get('sentiment_score', 0)
+                            
+                            ai_result_data = batch_result.analysis_result.get('ai_result')
+                            if ai_result_data:
+                                ai_results.append(ai_result_data)
+                            else:
+                                # 创建默认结果
+                                default_result = self._create_default_ai_result(symbol, enriched_data)
+                                ai_results.append(default_result)
+                        else:
+                            # 创建默认结果
+                            default_result = self._create_default_ai_result(symbol, enriched_data)
+                            ai_results.append(default_result)
+                    else:
+                        # 创建默认结果
+                        default_result = self._create_default_ai_result(symbol, enriched_data)
                         ai_results.append(default_result)
                 
-                # 添加延迟避免过载（仅在多批次时）
-                if i + batch_size < len(stock_list):
-                    import time
-                    time.sleep(0.3)
-            
-            # 处理统计信息
-            total_batches = successful_batches + failed_batches
-            success_rate = (successful_batches / total_batches * 100) if total_batches > 0 else 0
-            
-            logger.info(f"🤖 AI批量处理完成: {successful_batches}/{total_batches} 批次成功 ({success_rate:.1f}%)")
+                # 记录处理统计
+                logger.info(f"🤖 AI批次处理完成:")
+                logger.info(f"📊 总股票数: {processing_report.total_stocks}")
+                logger.info(f"✅ 成功处理: {processing_report.successful_stocks}")
+                logger.info(f"❌ 失败数量: {processing_report.failed_stocks}")
+                logger.info(f"⏱️ 总耗时: {processing_report.total_time:.2f}秒")
+                logger.info(f"🚀 处理吞吐量: {processing_report.throughput:.2f}股票/秒")
+                logger.info(f"💾 内存峰值: {processing_report.memory_peak:.1f}%")
+                
+            else:
+                # 回退到原有的批处理方式
+                logger.warning("⚠️ AI批次处理器不可用，使用传统批处理方式")
+                ai_results = self._fallback_ai_processing(stock_symbol_to_data, ai_config, enriched_data)
             
             # 将AI分析结果合并到数据中
             if ai_results:
@@ -486,6 +550,86 @@ class StockSelector:
         except Exception as e:
             logger.error(f"❌ AI增强数据处理失败: {e}")
             return stock_data
+    
+    def _create_default_ai_result(self, symbol: str, enriched_data: pd.DataFrame):
+        """创建默认AI分析结果"""
+        try:
+            # 尝试从现有数据中获取基础评分
+            default_score = 50.0
+            if 'overall_score' in enriched_data.columns:
+                symbol_data = enriched_data[enriched_data.get('ts_code', '') == symbol]
+                if not symbol_data.empty:
+                    default_score = float(symbol_data['overall_score'].iloc[0])
+        except:
+            default_score = 50.0
+        
+        return type('AIResult', (), {
+            'symbol': symbol,
+            'overall_score': default_score,
+            'confidence_level': 0.2,
+            'recommendation': '数据不足',
+            'risk_assessment': 'AI分析失败',
+            'expert_committee_score': None,
+            'adaptive_strategy_score': None,
+            'pattern_recognition_score': None,
+            'market_regime': None,
+            'detected_patterns': [],
+            'key_factors': ['AI分析失败'],
+            'processing_time': 0.0
+        })()
+    
+    def _fallback_ai_processing(self, stock_symbol_to_data: Dict[str, Dict], 
+                               ai_config, enriched_data: pd.DataFrame) -> List:
+        """回退的AI处理方式（原有的批处理逻辑）"""
+        try:
+            stock_list = list(stock_symbol_to_data.values())
+            ai_results = []
+            
+            # 简化的批处理
+            batch_size = 15
+            for i in range(0, len(stock_list), batch_size):
+                batch = stock_list[i:i + batch_size]
+                
+                try:
+                    # 准备市场数据
+                    market_data = None
+                    if ai_config.market_data_required:
+                        market_data = {
+                            'market_type': 'A股',
+                            'timestamp': datetime.now(),
+                            'news_data': []
+                        }
+                    
+                    batch_results = self.ai_strategy_manager.batch_analyze_stocks(
+                        batch, market_data=market_data, config=ai_config
+                    )
+                    
+                    if batch_results:
+                        ai_results.extend(batch_results)
+                    else:
+                        # 创建默认结果
+                        for stock_info in batch:
+                            symbol = stock_info.get('ts_code', '')
+                            default_result = self._create_default_ai_result(symbol, enriched_data)
+                            ai_results.append(default_result)
+                
+                except Exception as e:
+                    logger.warning(f"❌ 回退批处理失败: {e}")
+                    # 创建默认结果
+                    for stock_info in batch:
+                        symbol = stock_info.get('ts_code', '')
+                        default_result = self._create_default_ai_result(symbol, enriched_data)
+                        ai_results.append(default_result)
+                
+                # 添加延迟
+                if i + batch_size < len(stock_list):
+                    time.sleep(0.2)
+            
+            return ai_results
+            
+        except Exception as e:
+            logger.error(f"❌ 回退AI处理失败: {e}")
+            return []
     
     def _apply_filters(self, data: pd.DataFrame, filters: List[Union[FilterCondition, FilterGroup]]) -> pd.DataFrame:
         """应用筛选条件"""
@@ -582,7 +726,49 @@ class StockSelector:
             total_candidates = len(stock_data)
             logger.info(f"📊 候选股票总数: {total_candidates}")
             
-            # 2. 丰富股票数据
+            # 2. 智能采样 (大幅减少需要详细分析的股票数量)
+            if criteria.enable_smart_sampling and self.intelligent_sampler and len(stock_data) > (criteria.limit or 100) * 2:
+                logger.info(f"🎯 启用智能采样，优化数据获取流程...")
+                
+                # 创建采样配置
+                sampling_config = criteria.sampling_config or SamplingConfig(
+                    strategy=SamplingStrategy.HYBRID,
+                    max_candidates=min(800, max((criteria.limit or 100) * 4, len(stock_data) // 4)),  # 智能确定采样数量
+                    min_market_cap=5.0,  # 5亿最小市值
+                    min_daily_volume=5000000,  # 500万最小成交额
+                    min_price=1.0,
+                    max_price=300.0,
+                    exclude_st_stocks=True,
+                    activity_days=30,
+                    enable_cache=True
+                )
+                
+                logger.info(f"📈 采样目标: {len(stock_data)} -> {sampling_config.max_candidates}")
+                
+                # 执行智能采样
+                sampling_result = self.intelligent_sampler.smart_sample(stock_data, sampling_config)
+                
+                if sampling_result.sampled_stocks:
+                    # 过滤到采样的股票
+                    sampled_symbols = set(sampling_result.sampled_stocks)
+                    if 'ts_code' in stock_data.columns:
+                        stock_data = stock_data[stock_data['ts_code'].isin(sampled_symbols)].reset_index(drop=True)
+                    
+                    logger.info(f"✅ 智能采样完成: {sampling_result.original_count} -> {len(stock_data)} 只股票")
+                    logger.info(f"🎯 采样策略: {sampling_result.strategy_used.value}")
+                    logger.info(f"⏱️ 采样耗时: {sampling_result.execution_time:.2f}秒")
+                    logger.info(f"🌟 质量评分: {sampling_result.quality_score:.2f}")
+                else:
+                    logger.warning("⚠️ 智能采样未返回有效结果，继续使用全量数据")
+            else:
+                if not criteria.enable_smart_sampling:
+                    logger.info("📊 智能采样已禁用，使用全量数据")
+                elif not self.intelligent_sampler:
+                    logger.warning("⚠️ 智能采样器不可用，使用全量数据")
+                else:
+                    logger.info(f"📊 数据量较小({len(stock_data)})，无需智能采样")
+            
+            # 3. 丰富股票数据
             if criteria.include_scores or criteria.include_basic_info:
                 logger.info("🔄 正在丰富股票数据...")
                 
@@ -607,6 +793,9 @@ class StockSelector:
             else:
                 filtered_data = stock_data.copy()
             
+            # 更新实际候选数量（考虑智能采样后的数量）
+            actual_candidates = len(stock_data)
+            
             # 4. 智能排序 - 结合AI评分和传统评分
             sort_column = criteria.sort_by
             
@@ -614,33 +803,58 @@ class StockSelector:
             if criteria.ai_mode != AIMode.BASIC and 'ai_overall_score' in filtered_data.columns:
                 logger.info("🤖 使用AI增强排序策略")
                 
-                # 计算综合智能评分
-                ai_weight = 0.7  # AI评分权重70%
+                # 计算综合智能评分（包含社交数据）
+                ai_weight = 0.5  # AI评分权重50%
                 traditional_weight = 0.3  # 传统评分权重30%
+                social_weight = 0.2  # 社交评分权重20%
                 
                 # 标准化评分到0-100范围
                 ai_scores = filtered_data['ai_overall_score'].fillna(50)
                 traditional_scores = filtered_data.get('overall_score', pd.Series([50] * len(filtered_data)))
+                social_scores = filtered_data.get('social_score', pd.Series([50] * len(filtered_data)))
                 
                 # 如果有置信度，根据置信度调整权重
                 if 'ai_confidence' in filtered_data.columns:
                     confidence_scores = filtered_data['ai_confidence'].fillna(0.5)
                     # 高置信度时增加AI权重，低置信度时降低AI权重
-                    dynamic_ai_weight = ai_weight * confidence_scores + (1 - confidence_scores) * 0.4
-                    dynamic_traditional_weight = 1 - dynamic_ai_weight
+                    # 动态调整权重基于置信度
+                    confidence_factor = confidence_scores.mean()
+                    
+                    # 根据置信度调整各部分权重
+                    dynamic_ai_weight = ai_weight * (0.5 + confidence_factor * 0.5)  # 0.25-0.5
+                    dynamic_traditional_weight = traditional_weight * (1.5 - confidence_factor * 0.5)  # 0.3-0.45
+                    dynamic_social_weight = social_weight  # 社交权重保持稳定
+                    
+                    # 归一化权重
+                    total_weight = dynamic_ai_weight + dynamic_traditional_weight + dynamic_social_weight
+                    dynamic_ai_weight /= total_weight
+                    dynamic_traditional_weight /= total_weight
+                    dynamic_social_weight /= total_weight
                     
                     filtered_data['intelligent_score'] = (
                         ai_scores * dynamic_ai_weight + 
-                        traditional_scores * dynamic_traditional_weight
+                        traditional_scores * dynamic_traditional_weight +
+                        social_scores * dynamic_social_weight
                     )
-                    logger.info("🎯 使用动态权重智能评分 (基于AI置信度)")
+                    logger.info(f"🎯 使用动态权重智能评分 (AI:{dynamic_ai_weight:.2f}, 传统:{dynamic_traditional_weight:.2f}, 社交:{dynamic_social_weight:.2f})")
                 else:
                     # 固定权重
                     filtered_data['intelligent_score'] = (
                         ai_scores * ai_weight + 
-                        traditional_scores * traditional_weight
+                        traditional_scores * traditional_weight +
+                        social_scores * social_weight
                     )
-                    logger.info(f"⚖️ 使用固定权重智能评分 (AI:{ai_weight:.1f}, 传统:{traditional_weight:.1f})")
+                    logger.info(f"⚖️ 使用固定权重智能评分 (AI:{ai_weight:.1f}, 传统:{traditional_weight:.1f}, 社交:{social_weight:.1f})")
+                
+                # 添加社交信号加成
+                if 'social_signals' in filtered_data.columns:
+                    # 对有强烈社交信号的股票进行加减分
+                    for idx, row in filtered_data.iterrows():
+                        signals = str(row.get('social_signals', '')).split(',')
+                        if 'STRONG_BULLISH' in signals or 'SENTIMENT_SURGE' in signals:
+                            filtered_data.at[idx, 'intelligent_score'] = min(100, filtered_data.at[idx, 'intelligent_score'] + 5)
+                        elif 'HIGH_HEAT_WARNING' in signals:
+                            filtered_data.at[idx, 'intelligent_score'] = max(0, filtered_data.at[idx, 'intelligent_score'] - 5)
                 
                 # 优先使用智能评分排序
                 if sort_column in ['overall_score', 'ai_overall_score'] or not sort_column:
@@ -677,6 +891,16 @@ class StockSelector:
             # 6. 生成结果
             symbols = filtered_data['ts_code'].tolist() if 'ts_code' in filtered_data.columns else []
             summary = self._generate_summary(filtered_data, total_candidates)
+            
+            # 在摘要中添加智能采样信息
+            if criteria.enable_smart_sampling and actual_candidates != total_candidates:
+                summary['intelligent_sampling'] = {
+                    'enabled': True,
+                    'original_candidates': total_candidates,
+                    'sampled_candidates': actual_candidates,
+                    'sampling_ratio': actual_candidates / max(total_candidates, 1),
+                    'sampling_efficiency': f"{100 * (1 - actual_candidates / max(total_candidates, 1)):.1f}% 数据量减少"
+                }
             
             execution_time = time.time() - start_time
             
@@ -773,7 +997,18 @@ class StockSelector:
                 min_confidence=0.6,
                 parallel_processing=True,
                 enable_caching=True
-            ) if ai_mode != AIMode.BASIC else None
+            ) if ai_mode != AIMode.BASIC else None,
+            # 启用智能采样
+            enable_smart_sampling=True,
+            sampling_config=SamplingConfig(
+                strategy=SamplingStrategy.HYBRID,
+                max_candidates=min(1000, limit * 10),  # 采样数量为目标的10倍
+                min_market_cap=min_market_cap if min_market_cap > 0 else 5.0,
+                min_daily_volume=10000000,  # 1000万最小成交额
+                min_price=2.0,
+                exclude_st_stocks=True,
+                enable_cache=True
+            )
         )
         
         return self.select_stocks(criteria)
@@ -827,7 +1062,20 @@ class StockSelector:
             include_scores=True,
             include_basic_info=True,
             ai_mode=ai_mode,
-            ai_config=ai_config
+            ai_config=ai_config,
+            # AI增强选股启用更激进的智能采样
+            enable_smart_sampling=True,
+            sampling_config=SamplingConfig(
+                strategy=SamplingStrategy.HYBRID,
+                max_candidates=min(1500, limit * 15),  # AI模式使用更大的采样池
+                min_market_cap=8.0,  # 8亿最小市值
+                min_daily_volume=15000000,  # 1500万最小成交额
+                min_price=3.0,
+                exclude_st_stocks=True,
+                enable_momentum_filter=True,
+                momentum_threshold=-15.0,  # 过滤掉跌幅过大的
+                enable_cache=True
+            )
         )
         
         return self.select_stocks(criteria)
@@ -1005,6 +1253,81 @@ class StockSelector:
             logger.info("🧹 AI分析缓存已清理")
         else:
             logger.warning("⚠️ AI策略管理器未初始化")
+
+    def switch_ai_model(self, model_key: str) -> bool:
+        """
+        切换AI模型
+        
+        Args:
+            model_key: 模型键值
+            
+        Returns:
+            是否切换成功
+        """
+        try:
+            logger.info(f"🔄 [选股引擎] 切换AI模型: {model_key}")
+            
+            if self.ai_strategy_manager:
+                success = self.ai_strategy_manager.switch_ai_model(model_key)
+                if success:
+                    logger.info(f"✅ [选股引擎] AI模型切换成功: {model_key}")
+                    # 清理缓存以使新模型生效
+                    self.clear_ai_cache()
+                    return True
+                else:
+                    logger.error(f"❌ [选股引擎] AI模型切换失败: {model_key}")
+                    return False
+            else:
+                # 如果AI策略管理器未初始化，直接设置全局模型
+                from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+                llm_manager = get_llm_manager()
+                success = llm_manager.set_current_model(model_key)
+                if success:
+                    logger.info(f"✅ [选股引擎] 全局AI模型设置成功: {model_key}")
+                    return True
+                else:
+                    logger.error(f"❌ [选股引擎] 全局AI模型设置失败: {model_key}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"❌ [选股引擎] AI模型切换异常: {e}")
+            return False
+
+    def get_available_ai_models(self) -> Dict[str, Dict[str, Any]]:
+        """获取可用的AI模型列表"""
+        try:
+            if self.ai_strategy_manager:
+                return self.ai_strategy_manager.get_available_ai_models()
+            else:
+                from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+                llm_manager = get_llm_manager()
+                return llm_manager.get_enabled_models()
+        except Exception as e:
+            logger.error(f"❌ [选股引擎] 获取可用模型失败: {e}")
+            return {}
+
+    def get_current_ai_model_info(self) -> Optional[Dict[str, Any]]:
+        """获取当前AI模型信息"""
+        try:
+            if self.ai_strategy_manager:
+                return self.ai_strategy_manager.get_current_ai_model_info()
+            else:
+                from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+                llm_manager = get_llm_manager()
+                current_config = llm_manager.get_current_config()
+                if current_config:
+                    return {
+                        'provider': current_config.provider,
+                        'model_name': current_config.model_name,
+                        'display_name': current_config.display_name,
+                        'description': current_config.description,
+                        'temperature': current_config.temperature,
+                        'max_tokens': current_config.max_tokens
+                    }
+                return None
+        except Exception as e:
+            logger.error(f"❌ [选股引擎] 获取当前模型信息失败: {e}")
+            return None
 
 
 # 全局选股引擎实例

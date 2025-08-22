@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import time
 import re
 from bs4 import BeautifulSoup
+import concurrent.futures
 
 # 导入日志模块
 from tradingagents.utils.logging_manager import get_logger
@@ -40,10 +41,20 @@ class XueqiuProvider:
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         
+        # 缓存配置
+        self._cache = {}
+        self._cache_timestamps = {}
+        self._cache_ttl = {
+            'sentiment': 7200,     # 情绪数据缓存2小时
+            'discussions': 3600,   # 讨论数据缓存1小时
+            'hot_topics': 1800,    # 热门话题缓存30分钟
+            'portfolio': 86400     # 持仓数据缓存24小时
+        }
+        
         # 初始化会话，获取必要的cookies
         self._init_session()
         
-        logger.info("✅ 雪球数据提供器初始化成功")
+        logger.info("✅ 雪球数据提供器初始化成功（带缓存优化）")
 
     def _init_session(self):
         """初始化雪球会话，获取必要的cookies"""
@@ -125,8 +136,33 @@ class XueqiuProvider:
             logger.error(f"❌ 获取雪球讨论失败: {symbol}, 错误: {str(e)}")
             return []
 
+    def _get_cache_key(self, cache_type: str, *args) -> str:
+        """生成缓存键"""
+        return f"{cache_type}:{':'.join(str(arg) for arg in args)}"
+    
+    def _get_cached_data(self, cache_key: str, cache_type: str) -> Optional[Any]:
+        """获取缓存数据"""
+        if cache_key in self._cache:
+            timestamp = self._cache_timestamps.get(cache_key, 0)
+            ttl = self._cache_ttl.get(cache_type, 3600)
+            if time.time() - timestamp < ttl:
+                logger.debug(f"📋 使用缓存数据: {cache_key}")
+                return self._cache[cache_key]
+        return None
+    
+    def _set_cached_data(self, cache_key: str, data: Any):
+        """设置缓存数据"""
+        self._cache[cache_key] = data
+        self._cache_timestamps[cache_key] = time.time()
+    
     def get_stock_sentiment(self, symbol: str, days: int = 7) -> Dict[str, Any]:
         """获取股票情绪分析"""
+        # 检查缓存
+        cache_key = self._get_cache_key('sentiment', symbol, days)
+        cached_data = self._get_cached_data(cache_key, 'sentiment')
+        if cached_data:
+            return cached_data
+        
         try:
             discussions = self.get_stock_discussions(symbol, limit=100)
             if not discussions:
@@ -156,7 +192,7 @@ class XueqiuProvider:
             
             total_count = len(discussions)
             
-            return {
+            result = {
                 'symbol': symbol,
                 'total_discussions': total_count,
                 'positive_ratio': positive_count / total_count if total_count > 0 else 0,
@@ -168,6 +204,11 @@ class XueqiuProvider:
                 'data_date': datetime.now().strftime('%Y-%m-%d'),
                 'source': '雪球'
             }
+            
+            # 缓存结果
+            self._set_cached_data(cache_key, result)
+            
+            return result
             
         except Exception as e:
             logger.error(f"❌ 获取雪球情绪分析失败: {symbol}, 错误: {str(e)}")
@@ -387,6 +428,63 @@ class XueqiuProvider:
             
         except Exception:
             return 0.0
+    
+    def get_multiple_stock_sentiments(self, symbols: List[str], max_workers: int = 15) -> Dict[str, Dict[str, Any]]:
+        """批量获取股票情绪分析（并发处理）"""
+        try:
+            if not symbols:
+                return {}
+            
+            logger.info(f"🚀 雪球批量情绪分析: {len(symbols)} 只股票，使用 {max_workers} 并发")
+            
+            all_results = {}
+            total_processed = 0
+            total_failed = 0
+            
+            def fetch_single_sentiment(symbol):
+                """获取单个股票情绪数据"""
+                try:
+                    time.sleep(0.15)  # 雪球需要更长的延迟防止被限制
+                    return symbol, self.get_stock_sentiment(symbol)
+                except Exception as e:
+                    logger.error(f"❌ 雪球获取 {symbol} 情绪失败: {e}")
+                    return symbol, {}
+            
+            # 并发处理
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_symbol = {
+                    executor.submit(fetch_single_sentiment, symbol): symbol 
+                    for symbol in symbols
+                }
+                
+                for future in concurrent.futures.as_completed(future_to_symbol):
+                    original_symbol = future_to_symbol[future]
+                    try:
+                        symbol_result, data = future.result()
+                        if data and 'symbol' in data:
+                            all_results[symbol_result] = data
+                            total_processed += 1
+                        else:
+                            total_failed += 1
+                        
+                        # 进度报告
+                        current_total = total_processed + total_failed
+                        if current_total % 50 == 0 or current_total >= len(symbols):
+                            progress = current_total / len(symbols) * 100
+                            logger.info(f"📈 雪球进度: {current_total}/{len(symbols)} ({progress:.1f}%) - 成功:{total_processed}")
+                            
+                    except Exception as e:
+                        logger.error(f"❌ 雪球处理 {original_symbol} 结果失败: {e}")
+                        total_failed += 1
+            
+            success_rate = total_processed / len(symbols) * 100 if len(symbols) > 0 else 0
+            logger.info(f"✅ 雪球批量完成: 总数:{len(symbols)} 成功:{total_processed} 失败:{total_failed} 成功率:{success_rate:.1f}%")
+            
+            return all_results
+            
+        except Exception as e:
+            logger.error(f"❌ 雪球批量获取失败: {e}")
+            return {}
 
 
 # 全局实例
@@ -416,3 +514,7 @@ def get_xueqiu_hot_topics(limit: int = 20) -> List[Dict[str, Any]]:
 def search_xueqiu_discussions(keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
     """搜索相关讨论"""
     return get_xueqiu_provider().search_discussions(keyword, limit)
+
+def get_xueqiu_multiple_sentiments(symbols: List[str], max_workers: int = 15) -> Dict[str, Dict[str, Any]]:
+    """批量获取股票情绪分析"""
+    return get_xueqiu_provider().get_multiple_stock_sentiments(symbols, max_workers)

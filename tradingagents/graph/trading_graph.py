@@ -30,6 +30,9 @@ from tradingagents.agents.utils.agent_states import (
 )
 from tradingagents.dataflows.interface import set_config
 
+# 导入动态LLM管理器
+from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+
 from .conditional_logic import ConditionalLogic
 from .setup import GraphSetup
 from .propagation import Propagator
@@ -65,150 +68,68 @@ class TradingAgentsGraph:
             exist_ok=True,
         )
 
-        # Initialize LLMs
-        if self.config["llm_provider"].lower() == "openai":
-            self.deep_thinking_llm = ChatOpenAI(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatOpenAI(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"] == "openrouter":
-            # OpenRouter支持：优先使用OPENROUTER_API_KEY，否则使用OPENAI_API_KEY
-            openrouter_api_key = os.getenv('OPENROUTER_API_KEY') or os.getenv('OPENAI_API_KEY')
-            if not openrouter_api_key:
-                raise ValueError("使用OpenRouter需要设置OPENROUTER_API_KEY或OPENAI_API_KEY环境变量")
-
-            logger.info(f"🌐 [OpenRouter] 使用API密钥: {openrouter_api_key[:20]}...")
-
-            self.deep_thinking_llm = ChatOpenAI(
-                model=self.config["deep_think_llm"],
-                base_url=self.config["backend_url"],
-                api_key=openrouter_api_key
-            )
-            self.quick_thinking_llm = ChatOpenAI(
-                model=self.config["quick_think_llm"],
-                base_url=self.config["backend_url"],
-                api_key=openrouter_api_key
-            )
-        elif self.config["llm_provider"] == "ollama":
-            self.deep_thinking_llm = ChatOpenAI(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatOpenAI(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"].lower() == "anthropic":
-            self.deep_thinking_llm = ChatAnthropic(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatAnthropic(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"].lower() == "google":
-            google_api_key = os.getenv('GOOGLE_API_KEY')
-            self.deep_thinking_llm = ChatGoogleGenerativeAI(
-                model=self.config["deep_think_llm"],
-                google_api_key=google_api_key,
-                temperature=0.1,
-                max_tokens=2000
-            )
-            self.quick_thinking_llm = ChatGoogleGenerativeAI(
-                model=self.config["quick_think_llm"],
-                google_api_key=google_api_key,
-                temperature=0.1,
-                max_tokens=2000
-            )
-        elif (self.config["llm_provider"].lower() == "dashscope" or
-              self.config["llm_provider"].lower() == "alibaba" or
-              "dashscope" in self.config["llm_provider"].lower() or
-              "阿里百炼" in self.config["llm_provider"]):
-            # 使用 OpenAI 兼容适配器，支持原生 Function Calling
-            logger.info(f"🔧 使用阿里百炼 OpenAI 兼容适配器 (支持原生工具调用)")
-            self.deep_thinking_llm = ChatDashScopeOpenAI(
-                model=self.config["deep_think_llm"],
-                temperature=0.1,
-                max_tokens=2000
-            )
-            self.quick_thinking_llm = ChatDashScopeOpenAI(
-                model=self.config["quick_think_llm"],
-                temperature=0.1,
-                max_tokens=2000
-            )
-        elif (self.config["llm_provider"].lower() == "deepseek" or
-              "deepseek" in self.config["llm_provider"].lower()):
-            # DeepSeek V3配置 - 使用支持token统计的适配器
-            from tradingagents.llm_adapters.deepseek_adapter import ChatDeepSeek
-
-
-            deepseek_api_key = os.getenv('DEEPSEEK_API_KEY')
-            if not deepseek_api_key:
-                raise ValueError("使用DeepSeek需要设置DEEPSEEK_API_KEY环境变量")
-
-            deepseek_base_url = os.getenv('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
-
-            # 使用支持token统计的DeepSeek适配器
-            self.deep_thinking_llm = ChatDeepSeek(
-                model=self.config["deep_think_llm"],
-                api_key=deepseek_api_key,
-                base_url=deepseek_base_url,
-                temperature=0.1,
-                max_tokens=2000
-            )
-            self.quick_thinking_llm = ChatDeepSeek(
-                model=self.config["quick_think_llm"],
-                api_key=deepseek_api_key,
-                base_url=deepseek_base_url,
-                temperature=0.1,
-                max_tokens=2000
+        # Initialize LLMs using Dynamic LLM Manager
+        self.llm_manager = get_llm_manager()
+        
+        # Check if specific models are configured in config
+        deep_think_model = self.config.get("deep_think_llm")
+        quick_think_model = self.config.get("quick_think_llm")
+        
+        # Try to use the configured model or auto-select available one
+        if deep_think_model:
+            # Try to find a matching model in available models
+            available_models = self.llm_manager.get_enabled_models()
+            matching_model = None
+            
+            for model_key, model_info in available_models.items():
+                if (model_info['model_name'] == deep_think_model or 
+                    deep_think_model in model_info['model_name'] or
+                    model_key.endswith(deep_think_model.replace('-', '_'))):
+                    matching_model = model_key
+                    break
+            
+            if matching_model:
+                success = self.llm_manager.set_current_model(matching_model)
+                if success:
+                    logger.info(f"🤖 [动态LLM] 已设置指定模型: {deep_think_model}")
+                else:
+                    logger.warning(f"⚠️ [动态LLM] 无法设置指定模型: {deep_think_model}, 将自动选择")
+            else:
+                logger.warning(f"⚠️ [动态LLM] 未找到匹配的模型: {deep_think_model}, 将自动选择")
+        
+        # Get LLM instances from the manager
+        try:
+            current_llm = self.llm_manager.get_current_llm()
+            if current_llm is None:
+                raise ValueError("无法获取任何可用的LLM实例，请检查API密钥配置")
+            
+            # Use the same LLM for both deep and quick thinking for now
+            # In the future, we could support different models for different purposes
+            self.deep_thinking_llm = current_llm
+            self.quick_thinking_llm = current_llm
+            
+            current_config = self.llm_manager.get_current_config()
+            if current_config:
+                logger.info(f"🤖 [动态LLM] 已初始化: {current_config.display_name or current_config.model_name}")
+                logger.info(f"   提供商: {current_config.provider}")
+                logger.info(f"   模型: {current_config.model_name}")
+            else:
+                logger.info("🤖 [动态LLM] 已初始化，使用默认配置")
+                
+        except Exception as e:
+            logger.error(f"❌ [动态LLM] 初始化失败: {e}")
+            # 如果动态LLM失败，尝试使用旧的配置方式作为fallback
+            logger.warning("⚠️ [动态LLM] 尝试使用传统配置方式作为备选")
+            if self.config.get("llm_provider", "").lower() == "openai":
+                self.deep_thinking_llm = ChatOpenAI(
+                    model=self.config.get("deep_think_llm", "gpt-4o"),
+                    base_url=self.config.get("backend_url"),
+                    temperature=0.1,
+                    max_tokens=2000
                 )
-
-            logger.info(f"✅ [DeepSeek] 已启用token统计功能")
-        elif (self.config["llm_provider"].lower() == "kimi" or
-              "kimi" in self.config["llm_provider"].lower() or
-              "moonshot" in self.config["llm_provider"].lower()):
-            # Kimi K2配置 - 使用OpenAI兼容接口
-            kimi_api_key = os.getenv('KIMI_API_KEY')
-            if not kimi_api_key:
-                raise ValueError("使用Kimi需要设置KIMI_API_KEY环境变量")
-
-            kimi_base_url = os.getenv('KIMI_BASE_URL', 'https://api.moonshot.cn/v1')
-
-            # 使用OpenAI兼容接口
-            self.deep_thinking_llm = ChatOpenAI(
-                model=self.config["deep_think_llm"],
-                api_key=kimi_api_key,
-                base_url=kimi_base_url,
-                temperature=0.1,
-                max_tokens=2000
-            )
-            self.quick_thinking_llm = ChatOpenAI(
-                model=self.config["quick_think_llm"],
-                api_key=kimi_api_key,
-                base_url=kimi_base_url,
-                temperature=0.1,
-                max_tokens=2000
-            )
-
-            logger.info("Kimi K2 configured successfully")
-        elif (self.config["llm_provider"].lower() == "glm" or
-              "glm" in self.config["llm_provider"].lower() or
-              "智谱" in self.config["llm_provider"] or
-              "zhipu" in self.config["llm_provider"].lower()):
-            # GLM-4.5配置 - 使用OpenAI兼容接口
-            glm_api_key = os.getenv('GLM_API_KEY')
-            if not glm_api_key:
-                raise ValueError("使用GLM需要设置GLM_API_KEY环境变量")
-
-            glm_base_url = os.getenv('GLM_BASE_URL', 'https://open.bigmodel.cn/api/paas/v4')
-
-            # 使用OpenAI兼容接口
-            self.deep_thinking_llm = ChatOpenAI(
-                model=self.config["deep_think_llm"],
-                api_key=glm_api_key,
-                base_url=glm_base_url,
-                temperature=0.1,
-                max_tokens=2000
-            )
-            self.quick_thinking_llm = ChatOpenAI(
-                model=self.config["quick_think_llm"],
-                api_key=glm_api_key,
-                base_url=glm_base_url,
-                temperature=0.1,
-                max_tokens=2000
-            )
-
-            logger.info("GLM-4.5 configured successfully")
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
+                self.quick_thinking_llm = self.deep_thinking_llm
+            else:
+                raise e
         
         self.toolkit = Toolkit(config=self.config)
 
@@ -417,3 +338,82 @@ class TradingAgentsGraph:
     def process_signal(self, full_signal, stock_symbol=None):
         """Process a signal to extract the core decision."""
         return self.signal_processor.process_signal(full_signal, stock_symbol)
+
+    def switch_llm_model(self, model_key: str) -> bool:
+        """
+        动态切换LLM模型
+        
+        Args:
+            model_key: 模型键值 (如 'dashscope_qwen_max', 'openai_gpt4o' 等)
+            
+        Returns:
+            是否切换成功
+        """
+        try:
+            logger.info(f"🔄 [动态LLM] 尝试切换模型: {model_key}")
+            
+            success = self.llm_manager.set_current_model(model_key)
+            if success:
+                # 更新LLM实例
+                new_llm = self.llm_manager.get_current_llm()
+                if new_llm:
+                    self.deep_thinking_llm = new_llm
+                    self.quick_thinking_llm = new_llm
+                    
+                    current_config = self.llm_manager.get_current_config()
+                    logger.info(f"✅ [动态LLM] 模型切换成功: {current_config.display_name or current_config.model_name}")
+                    return True
+                else:
+                    logger.error(f"❌ [动态LLM] 获取新模型实例失败")
+                    return False
+            else:
+                logger.error(f"❌ [动态LLM] 模型切换失败: {model_key}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ [动态LLM] 模型切换异常: {e}")
+            return False
+
+    def get_available_models(self) -> Dict[str, Dict[str, Any]]:
+        """获取可用的模型列表"""
+        try:
+            return self.llm_manager.get_enabled_models()
+        except Exception as e:
+            logger.error(f"❌ [动态LLM] 获取可用模型失败: {e}")
+            return {}
+
+    def get_current_model_info(self) -> Optional[Dict[str, Any]]:
+        """获取当前模型信息"""
+        try:
+            current_config = self.llm_manager.get_current_config()
+            if current_config:
+                return {
+                    'provider': current_config.provider,
+                    'model_name': current_config.model_name,
+                    'display_name': current_config.display_name,
+                    'description': current_config.description,
+                    'temperature': current_config.temperature,
+                    'max_tokens': current_config.max_tokens
+                }
+            return None
+        except Exception as e:
+            logger.error(f"❌ [动态LLM] 获取当前模型信息失败: {e}")
+            return None
+
+    def test_current_model(self) -> Dict[str, Any]:
+        """测试当前模型连接"""
+        try:
+            current_config = self.llm_manager.get_current_config()
+            if not current_config:
+                return {'success': False, 'error': '无当前模型配置'}
+            
+            # 找到当前模型的键值
+            for model_key, config in self.llm_manager.available_configs.items():
+                if config == current_config:
+                    return self.llm_manager.test_model(model_key)
+            
+            return {'success': False, 'error': '无法找到当前模型键值'}
+            
+        except Exception as e:
+            logger.error(f"❌ [动态LLM] 测试模型失败: {e}")
+            return {'success': False, 'error': str(e)}

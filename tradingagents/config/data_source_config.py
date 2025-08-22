@@ -16,24 +16,48 @@ class DataSourceConfig:
     def __init__(self):
         """初始化数据源配置"""
         self.config = {
-            # 数据源优先级 - 无API限制优先
-            'priority_order': [
-                'eastmoney',    # 东方财富 - 全面免费
+            # 分层数据源策略 - 解决速度问题的核心配置
+            'tiered_strategy': {
+                'enable_tiered': True,              # 启用分层数据获取
+                'batch_preferred': True,            # 批量数据源优先
+                'intelligent_fallback': True,       # 智能降级
+                'performance_monitoring': True,     # 性能监控
+            },
+            
+            # 批量数据源优先级 - 高效批量下载
+            'batch_sources': [
+                'baostock',     # BaoStock - 完全免费批量下载
+                'akshare',      # AKShare - 免费批量API
+                'tushare',      # Tushare - 高质量批量数据（付费）
+            ],
+            
+            # 实时数据源优先级 - 精准单点获取
+            'realtime_sources': [
+                'eastmoney',    # 东方财富 - 实时行情
                 'tencent',      # 腾讯财经 - 实时免费
                 'sina',         # 新浪财经 - 稳定免费
-                'baostock',     # 宝通数据 - 免费基本面
                 'xueqiu',       # 雪球 - 社交+价格
-                'akshare',      # AKShare - 免费备用
+            ],
+            
+            # 传统优先级（保持向后兼容）
+            'priority_order': [
+                'baostock',     # 批量优先
+                'akshare',      # 批量优先
+                'eastmoney',    # 实时补充
+                'tencent',      # 实时补充
+                'sina',         # 实时补充
+                'xueqiu',       # 实时补充
             ],
             
             # 各数据源可用性配置
             'availability': {
-                'eastmoney': True,
-                'tencent': True,
-                'sina': True,
-                'xueqiu': True,
-                'tushare': False,
-                'akshare': True,
+                'baostock': True,      # 批量数据源
+                'akshare': True,       # 批量数据源  
+                'tushare': False,      # 批量数据源（需token）
+                'eastmoney': True,     # 实时数据源
+                'tencent': True,       # 实时数据源
+                'sina': True,          # 实时数据源
+                'xueqiu': True,        # 实时数据源
             },
             
             # 数据获取策略
@@ -44,6 +68,18 @@ class DataSourceConfig:
                 'enable_auto_fallback': True,       # 启用自动降级
                 'max_retry_per_source': 3,          # 每个数据源最大重试次数
                 'timeout_per_request': 30,          # 每个请求超时时间(秒)
+                
+                # 批量优化策略
+                'batch_size_optimization': True,    # 批量大小优化
+                'concurrent_batch_requests': 8,     # 并发批量请求数
+                'batch_request_delay': 0.1,         # 批量请求间隔（秒）
+                'intelligent_scheduling': True,     # 智能调度
+                'cache_integration': True,          # 缓存集成
+                
+                # 实时补充策略
+                'realtime_fallback_timeout': 5,     # 实时降级超时（秒）
+                'realtime_max_concurrent': 3,       # 实时最大并发数
+                'realtime_retry_delay': 1,          # 实时重试延迟（秒）
             },
             
             # 数据质量阈值
@@ -113,6 +149,47 @@ class DataSourceConfig:
     def get_cache_config(self) -> Dict[str, Any]:
         """获取缓存配置"""
         return self.config['cache'].copy()
+    
+    def get_tiered_strategy_config(self) -> Dict[str, Any]:
+        """获取分层策略配置"""
+        return self.config.get('tiered_strategy', {}).copy()
+    
+    def get_batch_sources(self) -> List[str]:
+        """获取批量数据源列表"""
+        return [source for source in self.config.get('batch_sources', [])
+                if self.is_source_enabled(source)]
+    
+    def get_realtime_sources(self) -> List[str]:
+        """获取实时数据源列表"""
+        return [source for source in self.config.get('realtime_sources', [])
+                if self.is_source_enabled(source)]
+    
+    def is_batch_preferred(self) -> bool:
+        """是否优先使用批量数据源"""
+        return self.config.get('tiered_strategy', {}).get('batch_preferred', True)
+    
+    def is_tiered_enabled(self) -> bool:
+        """是否启用分层数据获取"""
+        return self.config.get('tiered_strategy', {}).get('enable_tiered', True)
+    
+    def get_batch_config(self) -> Dict[str, Any]:
+        """获取批量数据源配置"""
+        strategy = self.config.get('strategy', {})
+        return {
+            'concurrent_requests': strategy.get('concurrent_batch_requests', 8),
+            'request_delay': strategy.get('batch_request_delay', 0.1),
+            'size_optimization': strategy.get('batch_size_optimization', True),
+            'intelligent_scheduling': strategy.get('intelligent_scheduling', True),
+        }
+    
+    def get_realtime_config(self) -> Dict[str, Any]:
+        """获取实时数据源配置"""
+        strategy = self.config.get('strategy', {})
+        return {
+            'fallback_timeout': strategy.get('realtime_fallback_timeout', 5),
+            'max_concurrent': strategy.get('realtime_max_concurrent', 3),
+            'retry_delay': strategy.get('realtime_retry_delay', 1),
+        }
 
 # 全局配置实例
 _data_source_config = None

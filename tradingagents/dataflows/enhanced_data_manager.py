@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 增强数据源管理器
-统一管理所有中国股票数据源，包括新增的东方财富、腾讯、新浪、雪球等
+统一管理所有中国股票数据源，集成分层数据获取策略
+解决用户提出的速度问题：从"一个个获取"改为"批量下载+精准补充"
 """
 
 import os
@@ -18,8 +19,30 @@ from tradingagents.config.data_source_config import get_data_source_config
 from tradingagents.dataflows.historical_data_manager import get_historical_manager
 from tradingagents.dataflows.stock_master_manager import get_stock_master_manager
 
-logger = get_logger('agents')
+# 导入分层数据管理器
+from tradingagents.dataflows.tiered_data_manager import (
+    get_tiered_data_manager, 
+    DataRequest, 
+    DataType,
+    smart_get_stock_data,
+    smart_batch_download
+)
+
+logger = get_logger('enhanced_data')
 warnings.filterwarnings('ignore')
+
+# 导入异步数据管道
+try:
+    from tradingagents.dataflows.async_data_pipeline import (
+        get_async_pipeline,
+        async_process_symbols,
+        PipelineConfig,
+        PipelineStage
+    )
+    ASYNC_PIPELINE_AVAILABLE = True
+except ImportError:
+    ASYNC_PIPELINE_AVAILABLE = False
+    logger.warning("⚠️ 异步数据管道模块不可用")
 
 # 导入所有数据源
 from .eastmoney_utils import get_eastmoney_provider
@@ -59,12 +82,47 @@ class EnhancedDataManager:
         self.historical_manager = get_historical_manager()
         self.stock_master_manager = get_stock_master_manager()
         
+        # 集成分层数据管理器
+        self.tiered_manager = None
+        self.enable_tiered = self.config.is_tiered_enabled()
+        
+        # 集成异步数据管道
+        self.async_pipeline = None
+        self.enable_async = ASYNC_PIPELINE_AVAILABLE
+        
         # 初始化所有数据源提供器
         self._init_providers()
+        
+        # 初始化分层管理器（如果启用）
+        if self.enable_tiered:
+            try:
+                self.tiered_manager = get_tiered_data_manager()
+                logger.info("🎯 分层数据管理器集成成功")
+            except Exception as e:
+                logger.warning(f"⚠️ 分层数据管理器初始化失败，回退到传统模式: {e}")
+                self.enable_tiered = False
+        
+        # 初始化异步管道（如果可用）
+        if self.enable_async:
+            try:
+                pipeline_config = PipelineConfig(
+                    max_concurrent_tasks=50,
+                    batch_size=100,
+                    enable_streaming=True,
+                    enable_caching=True,
+                    cache_ttl=3600
+                )
+                self.async_pipeline = get_async_pipeline(pipeline_config)
+                logger.info("⚡ 异步数据管道集成成功")
+            except Exception as e:
+                logger.warning(f"⚠️ 异步数据管道初始化失败: {e}")
+                self.enable_async = False
         
         logger.info("🚀 增强数据源管理器初始化完成")
         logger.info(f"   可用数据源: {list(self.providers.keys())}")
         logger.info(f"   数据源优先级: {self.config.get_priority_order()}")
+        logger.info(f"   分层数据获取: {'启用' if self.enable_tiered else '禁用'}")
+        logger.info(f"   异步数据管道: {'启用' if self.enable_async else '禁用'}")
         logger.info(f"   历史数据管理器: {self.historical_manager.__class__.__name__}")
         logger.info(f"   股票信息管理器: {self.stock_master_manager.__class__.__name__}")
         
@@ -112,7 +170,7 @@ class EnhancedDataManager:
                 self.provider_status[source] = False
 
     def get_comprehensive_stock_info(self, symbol: str) -> Dict[str, Any]:
-        """获取综合股票信息，整合多个数据源"""
+        """获取综合股票信息，优先使用分层数据管理器加速"""
         try:
             comprehensive_data = {
                 'symbol': symbol,
@@ -121,6 +179,41 @@ class EnhancedDataManager:
                 'data_quality_score': 0.0,
                 'primary_source': None
             }
+            
+            # 如果启用分层数据管理器，优先使用智能获取
+            if self.enable_tiered and self.tiered_manager:
+                logger.info(f"🚀 使用分层数据管理器快速获取 {symbol} 信息")
+                
+                try:
+                    # 使用智能获取（会自动选择批量或实时数据源）
+                    smart_data = self.get_stock_data_smart(symbol)
+                    
+                    if smart_data and symbol in smart_data:
+                        # 成功获取到数据
+                        df = smart_data[symbol]
+                        if not df.empty:
+                            latest_row = df.iloc[-1]  # 获取最新一条数据
+                            
+                            comprehensive_data.update({
+                                'current_price': float(latest_row.get('close', 0)),
+                                'open_price': float(latest_row.get('open', 0)), 
+                                'high_price': float(latest_row.get('high', 0)),
+                                'low_price': float(latest_row.get('low', 0)),
+                                'volume': int(latest_row.get('volume', 0)),
+                                'name': symbol,  # 可以后续从股票列表获取真实名称
+                                'sources': ['tiered_smart'],
+                                'primary_source': 'tiered_smart',
+                                'data_quality_score': 1.0  # 分层数据源质量较高
+                            })
+                            
+                            logger.info(f"✅ 分层管理器快速获取 {symbol} 成功: ¥{comprehensive_data.get('current_price', 0):.2f}")
+                            return comprehensive_data
+                            
+                except Exception as e:
+                    logger.warning(f"⚠️ 分层数据管理器获取 {symbol} 失败，回退到传统模式: {e}")
+            
+            # 回退到传统模式（单个获取）
+            logger.info(f"📡 使用传统模式获取 {symbol} 信息")
             
             # 按优先级从多个数据源获取价格数据
             priority_order = self.config.get_priority_order()
@@ -733,6 +826,335 @@ class EnhancedDataManager:
         logger.info(f"📊 数据源测试完成: {test_symbol}")
         return test_results
 
+    def get_comprehensive_stock_info_batch(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        批量获取综合股票信息 - 解决速度问题的关键方法
+        
+        Args:
+            symbols: 股票代码列表
+            
+        Returns:
+            {symbol: comprehensive_data} 批量股票信息
+        """
+        if not symbols:
+            return {}
+            
+        logger.info(f"🚀 批量获取 {len(symbols)} 只股票的综合信息")
+        
+        results = {}
+        
+        if self.enable_tiered and self.tiered_manager:
+            # 使用分层数据管理器批量获取
+            try:
+                # 批量获取历史数据（包含价格信息）
+                batch_data = self.get_stock_data_smart(symbols, prefer_batch=True)
+                
+                for symbol in symbols:
+                    if symbol in batch_data:
+                        df = batch_data[symbol]
+                        if not df.empty:
+                            latest_row = df.iloc[-1]
+                            results[symbol] = {
+                                'symbol': symbol,
+                                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'current_price': float(latest_row.get('close', 0)),
+                                'open_price': float(latest_row.get('open', 0)), 
+                                'high_price': float(latest_row.get('high', 0)),
+                                'low_price': float(latest_row.get('low', 0)),
+                                'volume': int(latest_row.get('volume', 0)),
+                                'name': symbol,
+                                'sources': ['tiered_batch'],
+                                'primary_source': 'tiered_batch',
+                                'data_quality_score': 1.0
+                            }
+                
+                logger.info(f"✅ 分层批量获取成功: {len(results)}/{len(symbols)} 只股票")
+                
+                # 对于没有获取到的股票，使用传统方式补充
+                missing_symbols = [s for s in symbols if s not in results]
+                if missing_symbols:
+                    logger.info(f"🔄 补充获取 {len(missing_symbols)} 只缺失股票")
+                    for symbol in missing_symbols:
+                        info = self.get_comprehensive_stock_info(symbol)
+                        if info and info.get('current_price', 0) > 0:
+                            results[symbol] = info
+                
+            except Exception as e:
+                logger.error(f"❌ 批量获取失败，回退到逐个获取: {e}")
+                # 回退到传统逐个获取
+                for symbol in symbols:
+                    try:
+                        info = self.get_comprehensive_stock_info(symbol)
+                        if info and info.get('current_price', 0) > 0:
+                            results[symbol] = info
+                    except Exception as ex:
+                        logger.warning(f"⚠️ 获取 {symbol} 失败: {ex}")
+        else:
+            # 传统逐个获取
+            logger.info(f"📡 使用传统模式逐个获取 {len(symbols)} 只股票")
+            for symbol in symbols:
+                try:
+                    info = self.get_comprehensive_stock_info(symbol)
+                    if info and info.get('current_price', 0) > 0:
+                        results[symbol] = info
+                except Exception as e:
+                    logger.warning(f"⚠️ 获取 {symbol} 失败: {e}")
+        
+        success_rate = len(results) / len(symbols) * 100 if symbols else 0
+        logger.info(f"📊 批量获取完成: {len(results)}/{len(symbols)} ({success_rate:.1f}%)")
+        
+        return results
+
+    def get_stock_data_smart(self, symbols: Union[str, List[str]], 
+                           start_date: str = None, end_date: str = None,
+                           prefer_batch: bool = True) -> Dict[str, pd.DataFrame]:
+        """
+        智能获取股票历史数据 - 分层数据获取策略
+        解决用户速度问题：批量优先 + 实时补充
+        
+        Args:
+            symbols: 股票代码或代码列表
+            start_date: 开始日期 (YYYY-MM-DD)
+            end_date: 结束日期 (YYYY-MM-DD)
+            prefer_batch: 是否优先使用批量数据源
+            
+        Returns:
+            {symbol: DataFrame} 股票数据字典
+        """
+        if self.enable_tiered and self.tiered_manager:
+            # 使用分层数据管理器
+            logger.info(f"🎯 使用分层数据获取策略获取 {len(symbols) if isinstance(symbols, list) else 1} 只股票数据")
+            return smart_get_stock_data(symbols, start_date, end_date, prefer_batch)
+        else:
+            # 传统单个获取方式
+            logger.info(f"📡 使用传统数据获取方式获取 {len(symbols) if isinstance(symbols, list) else 1} 只股票数据")
+            return self._get_stock_data_traditional(symbols, start_date, end_date)
+
+    def _get_stock_data_traditional(self, symbols: Union[str, List[str]], 
+                                  start_date: str = None, end_date: str = None) -> Dict[str, pd.DataFrame]:
+        """传统的逐个获取股票数据方式"""
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        
+        results = {}
+        for symbol in symbols:
+            try:
+                # 按优先级逐个尝试数据源
+                for source in self.config.get_priority_order():
+                    if source in self.providers and self.provider_status.get(source, False):
+                        try:
+                            provider = self.providers[source]
+                            if hasattr(provider, 'get_stock_data'):
+                                data = provider.get_stock_data(symbol, start_date, end_date)
+                                if data is not None and not data.empty:
+                                    results[symbol] = data
+                                    logger.info(f"✅ 从 {source} 获取 {symbol} 数据成功")
+                                    break
+                        except Exception as e:
+                            logger.warning(f"⚠️ {source} 获取 {symbol} 失败: {e}")
+                            continue
+                            
+                if symbol not in results:
+                    logger.warning(f"❌ 所有数据源都无法获取 {symbol} 数据")
+                    
+            except Exception as e:
+                logger.error(f"❌ 获取 {symbol} 数据时发生异常: {e}")
+        
+        return results
+
+    def batch_download_all_stocks(self, start_date: str = None, end_date: str = None,
+                                 data_types: List[str] = None) -> Dict[str, Any]:
+        """
+        批量下载所有股票数据 - 性能优化版本
+        
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期  
+            data_types: 数据类型列表 ['historical', 'financial', 'news']
+            
+        Returns:
+            下载结果统计
+        """
+        if self.enable_tiered and self.tiered_manager:
+            logger.info("🚀 使用分层数据管理器进行批量下载...")
+            # 转换数据类型
+            type_mapping = {
+                'historical': DataType.HISTORICAL,
+                'financial': DataType.FINANCIAL,
+                'news': DataType.NEWS
+            }
+            
+            if data_types:
+                mapped_types = [type_mapping.get(dt, DataType.HISTORICAL) for dt in data_types]
+            else:
+                mapped_types = [DataType.HISTORICAL]
+            
+            return self.tiered_manager.batch_download_all(start_date, end_date, mapped_types)
+        else:
+            logger.info("📡 使用传统方式进行批量下载...")
+            return self._batch_download_traditional(start_date, end_date, data_types)
+
+    def _batch_download_traditional(self, start_date: str = None, end_date: str = None,
+                                  data_types: List[str] = None) -> Dict[str, Any]:
+        """传统的批量下载方式"""
+        try:
+            # 获取股票列表
+            stock_list = self.get_stock_list('A')
+            symbols = [stock['symbol'] for stock in stock_list]
+            
+            # 逐个下载（效率较低）
+            results = {}
+            for data_type in (data_types or ['historical']):
+                if data_type == 'historical':
+                    data = self._get_stock_data_traditional(symbols, start_date, end_date)
+                    results[data_type] = data
+            
+            return {
+                'stats': {
+                    'total_symbols': len(symbols),
+                    'successful': len(results.get('historical', {})),
+                    'method': 'traditional'
+                },
+                'data': results
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 传统批量下载失败: {e}")
+            return {'error': str(e)}
+
+    async def get_comprehensive_stock_info_async(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        异步批量获取综合股票信息 - 最高性能版本
+        
+        Args:
+            symbols: 股票代码列表
+            
+        Returns:
+            {symbol: comprehensive_data} 批量股票信息
+        """
+        if not symbols:
+            return {}
+        
+        logger.info(f"⚡ 异步批量获取 {len(symbols)} 只股票的综合信息")
+        
+        if self.enable_async and self.async_pipeline:
+            try:
+                # 使用异步管道批量处理
+                import asyncio
+                result = await self.async_pipeline.process_symbols(symbols)
+                
+                # 转换结果格式
+                stock_results = {}
+                if 'results' in result:
+                    for symbol, data in result['results'].items():
+                        if data and not data.get('error'):
+                            stock_results[symbol] = {
+                                'symbol': symbol,
+                                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'current_price': data.get('price', 0),
+                                'open_price': data.get('open', 0),
+                                'high_price': data.get('high', 0),
+                                'low_price': data.get('low', 0),
+                                'volume': data.get('volume', 0),
+                                'change_pct': data.get('change_pct', 0),
+                                'final_score': data.get('final_score', 50),
+                                'recommendation': data.get('recommendation', 'HOLD'),
+                                'sources': ['async_pipeline'],
+                                'primary_source': 'async_pipeline',
+                                'data_quality_score': 1.0
+                            }
+                
+                # 记录度量
+                if 'metrics' in result:
+                    metrics = result['metrics']
+                    logger.info(f"⚡ 异步处理完成:")
+                    logger.info(f"   处理数量: {metrics.get('processed_packets', 0)}")
+                    logger.info(f"   失败数量: {metrics.get('failed_packets', 0)}")
+                    logger.info(f"   吞吐量: {metrics.get('throughput', 0):.2f} 股票/秒")
+                    logger.info(f"   错误率: {metrics.get('error_rate', 0):.1%}")
+                
+                success_rate = len(stock_results) / len(symbols) * 100 if symbols else 0
+                logger.info(f"✅ 异步批量获取成功: {len(stock_results)}/{len(symbols)} ({success_rate:.1f}%)")
+                
+                return stock_results
+                
+            except Exception as e:
+                logger.error(f"❌ 异步批量获取失败: {e}")
+                # 回退到同步批量获取
+                return self.get_comprehensive_stock_info_batch(symbols)
+        else:
+            # 回退到同步批量获取
+            logger.info("⚠️ 异步管道不可用，使用同步批量获取")
+            return self.get_comprehensive_stock_info_batch(symbols)
+    
+    def get_comprehensive_stock_info_async_sync(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        同步包装器：在同步环境中调用异步批量获取
+        
+        Args:
+            symbols: 股票代码列表
+            
+        Returns:
+            {symbol: comprehensive_data} 批量股票信息
+        """
+        try:
+            import asyncio
+            
+            # 检查是否已经在事件循环中
+            try:
+                loop = asyncio.get_running_loop()
+                # 已经在事件循环中，创建任务
+                return asyncio.create_task(self.get_comprehensive_stock_info_async(symbols))
+            except RuntimeError:
+                # 不在事件循环中，创建新循环
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(self.get_comprehensive_stock_info_async(symbols))
+                finally:
+                    loop.close()
+                    
+        except Exception as e:
+            logger.error(f"❌ 异步同步包装器失败: {e}")
+            # 回退到同步批量获取
+            return self.get_comprehensive_stock_info_batch(symbols)
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """获取数据获取性能统计"""
+        stats = {
+            'mode': 'traditional',
+            'tiered_enabled': False,
+            'async_enabled': False,
+            'providers': list(self.providers.keys()),
+            'provider_status': self.provider_status.copy()
+        }
+        
+        if self.enable_tiered and self.tiered_manager:
+            stats.update(self.tiered_manager.get_performance_stats())
+            stats['tiered_enabled'] = True
+            stats['mode'] = 'tiered'
+        
+        if self.enable_async and self.async_pipeline:
+            stats['async_enabled'] = True
+            stats['mode'] = 'async_pipeline'
+            if hasattr(self.async_pipeline, 'metrics'):
+                stats['async_metrics'] = self.async_pipeline._get_metrics_summary()
+        
+        return stats
+
+    def switch_to_batch_mode(self, enable: bool = True):
+        """切换到批量优先模式"""
+        if enable and not self.enable_tiered:
+            try:
+                self.tiered_manager = get_tiered_data_manager()
+                self.enable_tiered = True
+                logger.info("🎯 已切换到分层批量模式")
+            except Exception as e:
+                logger.error(f"❌ 切换到分层模式失败: {e}")
+        elif not enable and self.enable_tiered:
+            self.enable_tiered = False
+            logger.info("📡 已切换到传统模式")
+
 
 # 全局实例
 _enhanced_data_manager = None
@@ -749,6 +1171,10 @@ def get_enhanced_data_manager() -> EnhancedDataManager:
 def get_comprehensive_stock_data(symbol: str) -> Dict[str, Any]:
     """获取综合股票数据"""
     return get_enhanced_data_manager().get_comprehensive_stock_info(symbol)
+
+def get_comprehensive_stock_data_batch(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    """批量获取综合股票数据 - 高性能版本"""
+    return get_enhanced_data_manager().get_comprehensive_stock_info_batch(symbols)
 
 def get_comprehensive_news_data(symbol: str, limit: int = 50) -> List[Dict[str, Any]]:
     """获取综合新闻数据"""

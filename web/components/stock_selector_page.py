@@ -48,6 +48,74 @@ def render_stock_selector_page():
     st.markdown("# 🎯 智能选股系统")
     st.markdown("基于多源数据融合和综合评分的多市场智能选股引擎")
     
+    # 从session state获取侧边栏配置并应用到智能选股系统
+    llm_provider = st.session_state.get('llm_provider')
+    llm_model = st.session_state.get('llm_model')
+    
+    # 确保配置传递给后端LLM管理器
+    if llm_provider and llm_model:
+        try:
+            from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+            llm_manager = get_llm_manager()
+            
+            # 根据侧边栏配置设置LLM模型
+            model_mapping = {
+                ("dashscope", "qwen-turbo"): "dashscope_qwen_turbo",
+                ("dashscope", "qwen-plus-latest"): "dashscope_qwen_plus", 
+                ("dashscope", "qwen-max"): "dashscope_qwen_max",
+                ("deepseek", "deepseek-chat"): "deepseek_chat",
+                ("kimi", "moonshot-v1-8k"): "kimi_chat",
+                ("kimi", "moonshot-v1-32k"): "kimi_chat",
+                ("kimi", "moonshot-v1-128k"): "kimi_chat",
+                ("kimi", "kimi-k2-0711-preview"): "kimi_chat",
+                ("kimi", "kimi-k2-turbo-preview"): "kimi_chat",
+                ("google", "gemini-2.0-flash"): "google_gemini_pro",
+                ("google", "gemini-1.5-pro"): "google_gemini_pro",
+                ("google", "gemini-1.5-flash"): "google_gemini_pro",
+                ("glm", "glm-4-plus"): "glm_chat",
+                ("glm", "glm-4"): "glm_chat", 
+                ("glm", "glm-4-air"): "glm_chat",
+                ("glm", "glm-4-flash"): "glm_chat",
+                ("openrouter", None): "openrouter_claude"  # OpenRouter使用自定义模型
+            }
+            
+            # 查找匹配的模型键
+            model_key = None
+            for (provider, model), key in model_mapping.items():
+                if provider == llm_provider and (model is None or model == llm_model):
+                    model_key = key
+                    break
+            
+            # 对于OpenRouter，使用实际的模型名称
+            if llm_provider == "openrouter" and llm_model:
+                # 创建一个OpenRouter的临时配置
+                from tradingagents.llm_adapters.dynamic_llm_manager import LLMConfig
+                openrouter_config = LLMConfig(
+                    provider="openrouter",
+                    model_name=llm_model,
+                    base_url="https://openrouter.ai/api/v1",
+                    display_name=f"OpenRouter - {llm_model}",
+                    description=f"OpenRouter模型: {llm_model}"
+                )
+                # 添加到可用配置中
+                llm_manager.available_configs["openrouter_custom"] = openrouter_config
+                model_key = "openrouter_custom"
+            
+            if not model_key:
+                model_key = "openai_gpt4o"  # 默认回退
+                
+            # 设置当前模型
+            success = llm_manager.set_current_model(model_key)
+            if success:
+                logger.info(f"✅ [智能选股] AI模型已设置: {llm_provider} - {llm_model} -> {model_key}")
+            else:
+                logger.warning(f"⚠️ [智能选股] AI模型设置失败: {model_key}")
+                
+        except Exception as e:
+            logger.error(f"❌ [智能选股] LLM配置应用失败: {e}")
+    else:
+        logger.warning("⚠️ [智能选股] 侧边栏LLM配置不完整")
+    
     # 添加使用帮助
     render_selection_help()
     st.markdown("---")
@@ -98,8 +166,12 @@ def render_stock_selector_page():
                     st.warning("⚠️ AI增强功能不可用，使用基础选股模式")
             
             with col2:
-                # AI性能指标和调试工具
+                # AI模型选择和性能监控
                 if ai_status.get('ai_enabled', False):
+                    # AI模型选择
+                    with st.expander("🤖 AI模型选择", expanded=False):
+                        render_ai_model_selector(selector)
+                    
                     with st.expander("📊 AI性能监控", expanded=False):
                         total_analyses = ai_status.get('total_analyses', 0)
                         cache_hit_rate = ai_status.get('cache_hit_rate', 0)
@@ -122,6 +194,11 @@ def render_stock_selector_page():
                         with col_debug2:
                             if st.button("🧹 清理缓存", help="清理AI分析缓存"):
                                 clear_ai_caches()
+                else:
+                    # 即使AI未启用，也显示模型选择（可能有助于启动AI）
+                    with st.expander("🤖 AI模型设置", expanded=False):
+                        st.info("⚠️ AI功能未启用，但您可以配置AI模型")
+                        render_ai_model_selector(selector)
         
     except Exception as e:
         st.error(f"❌ 选股引擎初始化失败: {e}")
@@ -1150,6 +1227,174 @@ def clear_ai_caches():
             
     except Exception as e:
         st.error(f"❌ 缓存清理失败: {e}")
+
+def render_ai_model_selector(selector):
+    """渲染AI模型选择器 - 复用股票分析的侧边栏配置"""
+    try:
+        st.markdown("**🧠 AI模型配置**")
+        st.info("💡 **提示**: 智能选股使用与股票分析相同的AI模型配置，请在左侧侧边栏中选择AI模型")
+        
+        # 从session state获取当前配置
+        llm_provider = st.session_state.get('llm_provider')
+        llm_model = st.session_state.get('llm_model')
+        
+        if llm_provider and llm_model:
+            st.markdown("**🎯 当前AI模型:**")
+            col1, col2 = st.columns(2)
+            with col1:
+                # 显示侧边栏配置的模型信息
+                provider_display = {
+                    'dashscope': '🇨🇳 阿里云DashScope',
+                    'deepseek': '🚀 DeepSeek V3',
+                    'kimi': '🌙 月之暗面Kimi',
+                    'google': '🌟 Google AI',
+                    'openrouter': '🌐 OpenRouter',
+                    'glm': '🧠 智谱GLM'
+                }.get(llm_provider, llm_provider.upper())
+                
+                st.success(f"**{llm_model}**")
+                st.caption(f"供应商: {provider_display}")
+            with col2:
+                # 显示配置状态
+                try:
+                    # 验证模型是否正确配置
+                    current_model_info = selector.get_current_ai_model_info()
+                    if current_model_info:
+                        st.metric("状态", "✅ 已配置")
+                        if 'temperature' in current_model_info:
+                            st.metric("温度参数", f"{current_model_info.get('temperature', 0.7):.1f}")
+                    else:
+                        st.metric("状态", "⚠️ 待同步")
+                except:
+                    st.metric("状态", "🔄 加载中")
+        else:
+            st.warning("⚠️ 未检测到当前AI模型，请在左侧侧边栏配置")
+            st.markdown("**请按以下步骤配置AI模型：**")
+            st.markdown("1. 在左侧侧边栏找到 **🧠 AI模型配置**")
+            st.markdown("2. 选择 **LLM提供商** (如：🇨🇳 阿里百炼)")
+            st.markdown("3. 选择 **模型版本** (如：Plus - 平衡)")
+            st.markdown("4. 配置完成后，智能选股将自动使用该模型")
+        
+        # 获取可用模型统计
+        available_models = selector.get_available_ai_models()
+        if available_models:
+            # 按供应商分组统计
+            providers = {}
+            for model_key, model_info in available_models.items():
+                provider = model_info.get('provider', 'unknown')
+                if provider not in providers:
+                    providers[provider] = []
+                providers[provider].append((model_key, model_info))
+            
+            # 显示统计信息
+            with st.expander("📊 可用模型概览", expanded=False):
+                st.write(f"**总计**: {len(available_models)} 个模型，来自 {len(providers)} 个供应商")
+                
+                provider_names = {
+                    'openai': '🌐 OpenAI',
+                    'dashscope': '🇨🇳 阿里云DashScope', 
+                    'deepseek': '🚀 DeepSeek',
+                    'google': '🔍 Google AI',
+                    'anthropic': '🧠 Anthropic',
+                    'openrouter': '🌍 OpenRouter',
+                    'kimi': '🌙 月之暗面Kimi'
+                }
+                
+                for provider, models in providers.items():
+                    provider_display = provider_names.get(provider, provider.title())
+                    enabled_count = sum(1 for _, info in models if info.get('enabled') and info.get('has_api_key'))
+                    total_count = len(models)
+                    
+                    if enabled_count > 0:
+                        st.success(f"✅ **{provider_display}**: {enabled_count}/{total_count} 个模型可用")
+                    else:
+                        st.error(f"❌ **{provider_display}**: 需要配置API密钥")
+        
+        st.markdown("---")
+        st.markdown("**📝 说明**:")
+        st.markdown("- 智能选股的所有AI模式将使用您在侧边栏中选择的AI模型")
+        st.markdown("- 包括：AI增强选股、专家委员会选股、自适应策略选股等")
+        st.markdown("- 如需更换模型，请在左侧侧边栏的 **🧠 AI模型配置** 中选择")
+    
+    except Exception as e:
+        st.error(f"❌ AI模型选择器加载失败: {e}")
+        st.markdown("请检查系统配置或联系管理员")
+
+def get_api_key_name(provider: str) -> str:
+    """获取API密钥环境变量名"""
+    key_map = {
+        'openai': 'OPENAI_API_KEY',
+        'dashscope': 'DASHSCOPE_API_KEY', 
+        'deepseek': 'DEEPSEEK_API_KEY',
+        'google': 'GOOGLE_API_KEY',
+        'anthropic': 'ANTHROPIC_API_KEY',
+        'openrouter': 'OPENROUTER_API_KEY',
+        'kimi': 'KIMI_API_KEY'
+    }
+    return key_map.get(provider.lower(), f'{provider.upper()}_API_KEY')
+
+def switch_ai_model(selector, model_key: str, model_info: Dict[str, Any]):
+    """切换AI模型"""
+    try:
+        with st.spinner(f"🔄 正在切换到 {model_info.get('display_name', model_key)}..."):
+            success = selector.switch_ai_model(model_key)
+        
+        if success:
+            st.success(f"✅ 成功切换到: {model_info.get('display_name', model_key)}")
+            st.info("💡 AI模型已更新，新的选股分析将使用此模型")
+            
+            # 记录到session state以便后续使用
+            st.session_state.current_ai_model = model_key
+            
+            # 建议用户清理缓存
+            if st.button("🧹 清理AI缓存", help="清理旧模型的分析缓存"):
+                clear_ai_caches()
+            
+        else:
+            st.error(f"❌ 模型切换失败: {model_key}")
+            
+    except Exception as e:
+        st.error(f"❌ 模型切换异常: {e}")
+        logger.error(f"模型切换失败: {e}")
+
+def test_ai_model(selector, model_key: str):
+    """测试AI模型连接"""
+    try:
+        with st.spinner("🧪 正在测试模型连接..."):
+            # 尝试通过选股器测试模型
+            available_models = selector.get_available_ai_models()
+            model_info = available_models.get(model_key, {})
+            
+            if not model_info.get('has_api_key'):
+                st.error("❌ 模型测试失败: API密钥未配置")
+                return
+            
+            # 简单的连接测试
+            try:
+                from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+                llm_manager = get_llm_manager()
+                test_result = llm_manager.test_model(model_key)
+                
+                if test_result.get('success'):
+                    st.success("✅ 模型连接测试成功")
+                    
+                    # 显示测试详情
+                    with st.expander("📋 测试详情", expanded=False):
+                        st.write(f"**模型**: {test_result.get('model', 'N/A')}")
+                        st.write(f"**提供商**: {test_result.get('provider', 'N/A')}")
+                        
+                        response = test_result.get('response', '')
+                        if response:
+                            st.write(f"**测试响应**: {response[:200]}...")
+                else:
+                    st.error(f"❌ 模型连接测试失败: {test_result.get('error', '未知错误')}")
+                    
+            except Exception as e:
+                st.error(f"❌ 模型测试异常: {e}")
+                
+    except Exception as e:
+        st.error(f"❌ 测试过程失败: {e}")
+        logger.error(f"模型测试失败: {e}")
 
 if __name__ == "__main__":
     render_stock_selector_page()

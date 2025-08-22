@@ -51,36 +51,36 @@ class StockDataCache:
                         self.china_fundamentals_dir, self.metadata_dir]:
             dir_path.mkdir(exist_ok=True)
 
-        # 缓存配置 - 针对不同市场设置不同的TTL
+        # 缓存配置 - 激进化缓存策略，大幅延长TTL以提升选股速度
         self.cache_config = {
             'us_stock_data': {
-                'ttl_hours': 2,  # 美股数据缓存2小时（考虑到API限制）
-                'max_files': 1000,
+                'ttl_hours': 8,  # 美股数据缓存8小时（性能优化）
+                'max_files': 2000,  # 增加缓存文件上限
                 'description': '美股历史数据'
             },
             'china_stock_data': {
-                'ttl_hours': 1,  # A股数据缓存1小时（实时性要求高）
-                'max_files': 1000,
+                'ttl_hours': 8,  # A股数据缓存8小时（智能选股性能优化）
+                'max_files': 2000,  # 增加缓存文件上限
                 'description': 'A股历史数据'
             },
             'us_news': {
-                'ttl_hours': 6,  # 美股新闻缓存6小时
-                'max_files': 500,
+                'ttl_hours': 12,  # 美股新闻缓存12小时
+                'max_files': 1000,  # 增加缓存文件上限
                 'description': '美股新闻数据'
             },
             'china_news': {
-                'ttl_hours': 4,  # A股新闻缓存4小时
-                'max_files': 500,
+                'ttl_hours': 8,  # A股新闻缓存8小时
+                'max_files': 1000,  # 增加缓存文件上限
                 'description': 'A股新闻数据'
             },
             'us_fundamentals': {
-                'ttl_hours': 24,  # 美股基本面数据缓存24小时
-                'max_files': 200,
+                'ttl_hours': 48,  # 美股基本面数据缓存48小时（基本面变化缓慢）
+                'max_files': 500,  # 增加缓存文件上限
                 'description': '美股基本面数据'
             },
             'china_fundamentals': {
-                'ttl_hours': 12,  # A股基本面数据缓存12小时
-                'max_files': 200,
+                'ttl_hours': 24,  # A股基本面数据缓存24小时
+                'max_files': 500,  # 增加缓存文件上限
                 'description': 'A股基本面数据'
             }
         }
@@ -495,6 +495,47 @@ class StockDataCache:
         
         stats['total_size_mb'] = round(stats['total_size_mb'], 2)
         return stats
+    
+    def get(self, cache_key: str) -> Optional[Union[pd.DataFrame, str]]:
+        """
+        兼容接口：从缓存获取数据
+        
+        Args:
+            cache_key: 缓存键
+            
+        Returns:
+            缓存的数据或None
+        """
+        try:
+            return self.load_stock_data(cache_key)
+        except Exception as e:
+            logger.debug(f"Cache get failed for {cache_key}: {e}")
+            return None
+    
+    def set(self, cache_key: str, data: Union[pd.DataFrame, str], expire_minutes: int = 60):
+        """
+        兼容接口：保存数据到缓存
+        
+        Args:
+            cache_key: 缓存键
+            data: 要缓存的数据
+            expire_minutes: 过期时间（分钟），用于内部逻辑，实际TTL由类配置决定
+        """
+        try:
+            # 从cache_key解析symbol（简单解析）
+            parts = cache_key.split('_')
+            symbol = parts[2] if len(parts) > 2 else 'unknown'
+            
+            # 使用现有的save方法
+            self.save_stock_data(
+                symbol=symbol,
+                data=data,
+                data_source="tiered_cache"
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"Cache set failed for {cache_key}: {e}")
+            return False
 
 
 # 全局缓存实例

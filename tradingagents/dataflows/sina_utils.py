@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import time
 import re
 from bs4 import BeautifulSoup
+import concurrent.futures
 
 # 导入日志模块
 from tradingagents.utils.logging_manager import get_logger
@@ -176,8 +177,68 @@ class SinaFinanceProvider:
             logger.error(f"❌ 获取新浪股票信息失败: {symbol}, 错误: {str(e)}")
             return None
 
-    def get_multiple_stocks(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
-        """批量获取多只股票信息"""
+    def get_multiple_stocks(self, symbols: List[str], batch_size: int = 100, max_workers: int = 25) -> Dict[str, Dict[str, Any]]:
+        """批量获取多只股票信息（支持大批量并发处理）"""
+        try:
+            if not symbols:
+                return {}
+                
+            # 小批量使用新浪原生批量API
+            if len(symbols) <= batch_size:
+                return self._get_batch_via_api(symbols)
+            
+            # 大批量使用并发处理
+            logger.info(f"🚀 新浪财经大批量处理: {len(symbols)} 只股票，使用 {max_workers} 并发")
+            
+            all_results = {}
+            total_processed = 0
+            total_failed = 0
+            
+            # 分批处理
+            def process_batch(batch_symbols):
+                """处理单个批次"""
+                try:
+                    time.sleep(0.03)  # 更小的延迟，新浪可以处理更快的请求
+                    return self._get_batch_via_api(batch_symbols)
+                except Exception as e:
+                    logger.error(f"❌ 新浪财经批次处理失败: {str(e)}")
+                    return {}
+            
+            # 创建批次
+            batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+            
+            # 并发处理批次
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_batch = {executor.submit(process_batch, batch): batch for batch in batches}
+                
+                for future in concurrent.futures.as_completed(future_to_batch):
+                    batch = future_to_batch[future]
+                    try:
+                        batch_results = future.result()
+                        all_results.update(batch_results)
+                        total_processed += len(batch_results)
+                        
+                        # 进度报告
+                        current_total = total_processed + total_failed
+                        if current_total % 300 == 0 or current_total >= len(symbols):
+                            progress = current_total / len(symbols) * 100
+                            logger.info(f"📈 新浪财经进度: {current_total}/{len(symbols)} ({progress:.1f}%) - 成功:{total_processed}")
+                            
+                    except Exception as e:
+                        total_failed += len(batch)
+                        logger.error(f"❌ 新浪财经批次结果处理失败: {str(e)}")
+            
+            success_rate = total_processed / len(symbols) * 100 if len(symbols) > 0 else 0
+            logger.info(f"✅ 新浪财经批量完成: 总数:{len(symbols)} 成功:{total_processed} 失败:{total_failed} 成功率:{success_rate:.1f}%")
+            
+            return all_results
+            
+        except Exception as e:
+            logger.error(f"❌ 新浪财经批量获取失败: {str(e)}")
+            return {}
+    
+    def _get_batch_via_api(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """使用新浪原生API批量获取股票信息"""
         try:
             # 构造批量查询代码
             sina_codes = []
@@ -227,11 +288,10 @@ class SinaFinanceProvider:
                             'source': '新浪财经'
                         }
             
-            logger.info(f"✅ 新浪财经批量获取到 {len(results)} 只股票信息")
             return results
             
         except Exception as e:
-            logger.error(f"❌ 批量获取股票信息失败: 错误: {str(e)}")
+            logger.error(f"❌ 新浪API批量获取失败: {str(e)}")
             return {}
 
     def get_stock_news(self, symbol: str, limit: int = 20) -> List[Dict[str, Any]]:

@@ -162,6 +162,84 @@ def create_fundamentals_analyst(llm, toolkit):
             logger.warning(f"⚠️ [基本面分析师] 获取机构一致预期失败: {e}")
             institutional_consensus = None
 
+        # 获取当前股价信息用于基本面分析
+        current_stock_price = None
+        price_data_summary = ""
+        
+        try:
+            logger.debug(f"📊 [FundamentalsAnalyst] 开始获取{ticker}的当前股价...")
+            
+            if market_info['is_china']:
+                # A股：尝试获取实时数据
+                try:
+                    import akshare as ak
+                    real_data = ak.stock_zh_a_spot_em()
+                    stock_real = real_data[real_data['代码'] == ticker]
+                    
+                    if not stock_real.empty:
+                        current_stock_price = float(stock_real.iloc[0]['最新价'])
+                        prev_close = float(stock_real.iloc[0]['昨收'])
+                        change_pct = stock_real.iloc[0]['涨跌幅']
+                        pe_ratio = stock_real.iloc[0].get('市盈率', 'N/A')
+                        pb_ratio = stock_real.iloc[0].get('市净率', 'N/A')
+                        
+                        price_data_summary = f"""
+📊 **{company_name}({ticker}) 当前股价数据**：
+- 最新价格：¥{current_stock_price}
+- 昨日收盘：¥{prev_close}
+- 涨跌幅：{change_pct}%
+{f'- 市盈率(PE)：{pe_ratio}' if pe_ratio != 'N/A' else ''}
+{f'- 市净率(PB)：{pb_ratio}' if pb_ratio != 'N/A' else ''}
+- 数据来源：东方财富（实时）"""
+                        logger.debug(f"📊 [FundamentalsAnalyst] 获取到A股实时价格: {current_stock_price}")
+                except Exception as e:
+                    logger.debug(f"📊 [FundamentalsAnalyst] A股实时数据获取失败: {e}")
+            
+            # 如果实时数据获取失败，尝试从数据源管理器获取最新数据
+            if current_stock_price is None:
+                try:
+                    from tradingagents.dataflows.data_source_manager import get_data_source_manager
+                    from datetime import datetime, timedelta
+                    
+                    manager = get_data_source_manager()
+                    end_date = datetime.now().strftime('%Y%m%d')
+                    start_date = (datetime.now() - timedelta(days=3)).strftime('%Y%m%d')
+                    
+                    data_str = manager.get_stock_data(ticker, start_date, end_date)
+                    
+                    if data_str and ('最新价格' in data_str or '收盘' in data_str):
+                        import re
+                        # 尝试多种价格模式
+                        price_patterns = [
+                            r'最新价格[：:]?\s*[¥\$￥]?(\d+(?:\.\d+)?)',
+                            r'收盘[：:]?\s*[¥\$￥]?(\d+(?:\.\d+)?)',
+                            r'价格[：:]?\s*[¥\$￥]?(\d+(?:\.\d+)?)',
+                        ]
+                        
+                        for pattern in price_patterns:
+                            price_match = re.search(pattern, data_str)
+                            if price_match:
+                                current_stock_price = float(price_match.group(1))
+                                price_data_summary = f"""
+📊 **{company_name}({ticker}) 股价数据**：
+- 当前价格：{market_info['currency_symbol']}{current_stock_price}
+- 数据来源：历史数据（最新）"""
+                                logger.debug(f"📊 [FundamentalsAnalyst] 从数据源获取到价格: {current_stock_price}")
+                                break
+                                
+                except Exception as e:
+                    logger.debug(f"📊 [FundamentalsAnalyst] 数据源获取失败: {e}")
+                    
+        except Exception as e:
+            logger.error(f"📊 [FundamentalsAnalyst] 获取股价信息失败: {e}")
+        
+        # 如果没有获取到当前价格，使用默认提示
+        if current_stock_price is None:
+            price_data_summary = f"""
+📊 **{company_name}({ticker}) 股价数据**：
+- 当前股价：请从基本面数据中获取最新价格
+- 数据来源：待从基本面工具获取"""
+        
         # 构建机构观点摘要文本
         institutional_summary = ""
         if institutional_consensus and institutional_consensus.get('total_reports', 0) > 0:
@@ -205,12 +283,14 @@ def create_fundamentals_analyst(llm, toolkit):
             f"任务：分析{company_name}（股票代码：{ticker}，{market_info['market_name']}）"
             f"🔴 立即调用 get_stock_fundamentals_unified 工具"
             f"参数：ticker='{ticker}', start_date='{start_date}', end_date='{current_date}', curr_date='{current_date}'"
+            f"{price_data_summary}"
             f"{institutional_summary}"
             "📊 分析要求："
             "- 基于真实数据进行深度基本面分析"
             f"- 计算并提供合理价位区间（使用{market_info['currency_name']}{market_info['currency_symbol']}）"
             "- 分析当前股价是否被低估或高估"
             "- 提供基于基本面的目标价位建议"
+            f"- **特别注意**：{('当前股价为' + market_info['currency_symbol'] + str(current_stock_price) + '，请以此为基准进行估值分析') if current_stock_price else '请从基本面数据中获取最新价格并以此为基准'}"
             "- 包含PE、PB、PEG等估值指标分析"
             f"- **机构观点参考**：{('如有机构一致预期数据，请与自己的估值进行交叉验证' if institutional_consensus else '当前无机构研报数据，请专注于基本面分析')}"
             "- 结合市场特点进行分析"

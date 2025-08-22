@@ -98,6 +98,44 @@ class AdaptiveEngine:
         logger.info(f"   市场环境: {len(MarketRegime)} 种")
         logger.info(f"   策略配置: {len(self.strategy_library)} 个")
 
+    def set_ai_model(self, model_key: str) -> bool:
+        """
+        设置AI模型（适应性引擎本身不直接使用LLM，但可以为其组件设置）
+        
+        Args:
+            model_key: 模型键值
+            
+        Returns:
+            是否设置成功
+        """
+        try:
+            logger.info(f"🔄 [自适应引擎] 设置AI模型: {model_key}")
+            
+            from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+            llm_manager = get_llm_manager()
+            
+            success = llm_manager.set_current_model(model_key)
+            if success:
+                logger.info(f"✅ [自适应引擎] 模型设置成功: {model_key}")
+                return True
+            else:
+                logger.error(f"❌ [自适应引擎] 模型设置失败: {model_key}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ [自适应引擎] 模型设置异常: {e}")
+            return False
+
+    def get_available_ai_models(self) -> Dict[str, Dict[str, Any]]:
+        """获取可用的AI模型列表"""
+        try:
+            from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+            llm_manager = get_llm_manager()
+            return llm_manager.get_enabled_models()
+        except Exception as e:
+            logger.error(f"❌ [自适应引擎] 获取可用模型失败: {e}")
+            return {}
+
     def _initialize_strategy_library(self) -> Dict[Tuple[MarketRegime, StrategyType], AdaptiveStrategy]:
         """初始化策略配置库"""
         strategies = {}

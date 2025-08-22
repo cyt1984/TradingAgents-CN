@@ -129,6 +129,85 @@ class AIStrategyManager:
         logger.info("AI策略管理器初始化开始")
         self._initialize_ai_engines()
         logger.info("AI策略管理器初始化完成")
+
+    def switch_ai_model(self, model_key: str) -> bool:
+        """
+        切换AI模型
+        
+        Args:
+            model_key: 模型键值
+            
+        Returns:
+            是否切换成功
+        """
+        try:
+            logger.info(f"🔄 [AI策略管理器] 切换AI模型: {model_key}")
+            
+            # 如果有专家委员会，切换其模型
+            if self.expert_committee:
+                success = self.expert_committee.switch_ai_model(model_key)
+                if success:
+                    logger.info(f"✅ [AI策略管理器] 专家委员会模型切换成功: {model_key}")
+                else:
+                    logger.warning(f"⚠️ [AI策略管理器] 专家委员会模型切换失败: {model_key}")
+                    return False
+            
+            # 如果有自适应引擎，设置其AI模型
+            if self.adaptive_engine:
+                success = self.adaptive_engine.set_ai_model(model_key)
+                if success:
+                    logger.info(f"✅ [AI策略管理器] 自适应引擎模型设置成功: {model_key}")
+                else:
+                    logger.warning(f"⚠️ [AI策略管理器] 自适应引擎模型设置失败: {model_key}")
+            
+            # 为模式识别器和相似性引擎预设模型（如果它们将来需要LLM）
+            from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+            llm_manager = get_llm_manager()
+            success = llm_manager.set_current_model(model_key)
+            
+            if success:
+                logger.info(f"✅ [AI策略管理器] 全局模型切换成功: {model_key}")
+                return True
+            else:
+                logger.error(f"❌ [AI策略管理器] 全局模型切换失败: {model_key}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ [AI策略管理器] 模型切换异常: {e}")
+            return False
+
+    def get_available_ai_models(self) -> Dict[str, Dict[str, Any]]:
+        """获取可用的AI模型列表"""
+        try:
+            from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+            llm_manager = get_llm_manager()
+            return llm_manager.get_enabled_models()
+        except Exception as e:
+            logger.error(f"❌ [AI策略管理器] 获取可用模型失败: {e}")
+            return {}
+
+    def get_current_ai_model_info(self) -> Optional[Dict[str, Any]]:
+        """获取当前AI模型信息"""
+        try:
+            if self.expert_committee:
+                return self.expert_committee.get_current_ai_model_info()
+            else:
+                from tradingagents.llm_adapters.dynamic_llm_manager import get_llm_manager
+                llm_manager = get_llm_manager()
+                current_config = llm_manager.get_current_config()
+                if current_config:
+                    return {
+                        'provider': current_config.provider,
+                        'model_name': current_config.model_name,
+                        'display_name': current_config.display_name,
+                        'description': current_config.description,
+                        'temperature': current_config.temperature,
+                        'max_tokens': current_config.max_tokens
+                    }
+                return None
+        except Exception as e:
+            logger.error(f"❌ [AI策略管理器] 获取当前模型信息失败: {e}")
+            return None
         
     def _initialize_ai_engines(self):
         """初始化AI引擎"""

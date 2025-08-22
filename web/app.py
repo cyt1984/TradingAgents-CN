@@ -546,6 +546,50 @@ def main():
     # 在功能选择和AI模型配置之间添加分隔线
     st.sidebar.markdown("---")
 
+    # 检查API密钥（所有页面都需要）
+    api_status = check_api_keys()
+    
+    if not api_status['all_configured']:
+        st.error("⚠️ API密钥配置不完整，请先配置必要的API密钥")
+        
+        with st.expander("📋 API密钥配置指南", expanded=True):
+            st.markdown("""
+            ### 🔑 必需的API密钥
+            
+            1. **阿里百炼API密钥** (DASHSCOPE_API_KEY)
+               - 获取地址: https://dashscope.aliyun.com/
+               - 用途: AI模型推理
+            
+            2. **金融数据API密钥** (FINNHUB_API_KEY)  
+               - 获取地址: https://finnhub.io/
+               - 用途: 获取股票数据
+            
+            ### ⚙️ 配置方法
+            
+            1. 复制项目根目录的 `.env.example` 为 `.env`
+            2. 编辑 `.env` 文件，填入您的真实API密钥
+            3. 重启Web应用
+            
+            ```bash
+            # .env 文件示例
+            DASHSCOPE_API_KEY=sk-your-dashscope-key
+            FINNHUB_API_KEY=your-finnhub-key
+            ```
+            """)
+        
+        # 显示当前API密钥状态
+        st.subheader("🔍 当前API密钥状态")
+        for key, status in api_status['details'].items():
+            if status['configured']:
+                st.success(f"✅ {key}: {status['display']}")
+            else:
+                st.error(f"❌ {key}: 未配置")
+        
+        return
+    
+    # 渲染侧边栏（所有页面都需要AI模型配置）
+    config = render_sidebar()
+    
     # 根据选择的页面渲染不同内容
     if page == "🎯 智能选股":
         try:
@@ -588,49 +632,6 @@ def main():
         return
 
     # 默认显示股票分析页面
-    # 检查API密钥
-    api_status = check_api_keys()
-    
-    if not api_status['all_configured']:
-        st.error("⚠️ API密钥配置不完整，请先配置必要的API密钥")
-        
-        with st.expander("📋 API密钥配置指南", expanded=True):
-            st.markdown("""
-            ### 🔑 必需的API密钥
-            
-            1. **阿里百炼API密钥** (DASHSCOPE_API_KEY)
-               - 获取地址: https://dashscope.aliyun.com/
-               - 用途: AI模型推理
-            
-            2. **金融数据API密钥** (FINNHUB_API_KEY)  
-               - 获取地址: https://finnhub.io/
-               - 用途: 获取股票数据
-            
-            ### ⚙️ 配置方法
-            
-            1. 复制项目根目录的 `.env.example` 为 `.env`
-            2. 编辑 `.env` 文件，填入您的真实API密钥
-            3. 重启Web应用
-            
-            ```bash
-            # .env 文件示例
-            DASHSCOPE_API_KEY=sk-your-dashscope-key
-            FINNHUB_API_KEY=your-finnhub-key
-            ```
-            """)
-        
-        # 显示当前API密钥状态
-        st.subheader("🔍 当前API密钥状态")
-        for key, status in api_status['details'].items():
-            if status['configured']:
-                st.success(f"✅ {key}: {status['display']}")
-            else:
-                st.error(f"❌ {key}: 未配置")
-        
-        return
-    
-    # 渲染侧边栏
-    config = render_sidebar()
     
     # 添加使用指南显示切换
     show_guide = st.sidebar.checkbox("📖 显示使用指南", value=True, help="显示/隐藏右侧使用指南")

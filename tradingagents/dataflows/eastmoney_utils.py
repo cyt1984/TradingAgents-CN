@@ -12,6 +12,7 @@ import warnings
 from datetime import datetime, timedelta
 import time
 import re
+import concurrent.futures
 
 # 导入日志模块
 from tradingagents.utils.logging_manager import get_logger
@@ -332,6 +333,63 @@ class EastMoneyProvider:
         except Exception as e:
             logger.error(f"❌ 获取热门股票失败: 错误: {str(e)}")
             return []
+    
+    def get_multiple_stocks(self, symbols: List[str], max_workers: int = 20) -> Dict[str, Dict[str, Any]]:
+        """批量获取多只股票信息（并发处理）"""
+        try:
+            if not symbols:
+                return {}
+            
+            logger.info(f"🚀 东方财富批量处理: {len(symbols)} 只股票，使用 {max_workers} 并发")
+            
+            all_results = {}
+            total_processed = 0
+            total_failed = 0
+            
+            def fetch_single_stock(symbol):
+                """获取单个股票数据"""
+                try:
+                    time.sleep(0.08)  # 东方财富需要更长的延迟
+                    return symbol, self.get_stock_info(symbol)
+                except Exception as e:
+                    logger.error(f"❌ 东方财富获取 {symbol} 失败: {e}")
+                    return symbol, None
+            
+            # 并发处理
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_symbol = {
+                    executor.submit(fetch_single_stock, symbol): symbol 
+                    for symbol in symbols
+                }
+                
+                for future in concurrent.futures.as_completed(future_to_symbol):
+                    original_symbol = future_to_symbol[future]
+                    try:
+                        symbol_result, data = future.result()
+                        if data is not None:
+                            all_results[symbol_result] = data
+                            total_processed += 1
+                        else:
+                            total_failed += 1
+                        
+                        # 进度报告
+                        current_total = total_processed + total_failed
+                        if current_total % 100 == 0 or current_total >= len(symbols):
+                            progress = current_total / len(symbols) * 100
+                            logger.info(f"📈 东方财富进度: {current_total}/{len(symbols)} ({progress:.1f}%) - 成功:{total_processed}")
+                            
+                    except Exception as e:
+                        logger.error(f"❌ 东方财富处理 {original_symbol} 结果失败: {e}")
+                        total_failed += 1
+            
+            success_rate = total_processed / len(symbols) * 100 if len(symbols) > 0 else 0
+            logger.info(f"✅ 东方财富批量完成: 总数:{len(symbols)} 成功:{total_processed} 失败:{total_failed} 成功率:{success_rate:.1f}%")
+            
+            return all_results
+            
+        except Exception as e:
+            logger.error(f"❌ 东方财富批量获取失败: {e}")
+            return {}
 
 
 # 全局实例
@@ -365,3 +423,7 @@ def get_eastmoney_reports(symbol: str, limit: int = 10) -> List[Dict[str, Any]]:
 def get_eastmoney_financials(symbol: str) -> Optional[Dict[str, Any]]:
     """获取财务数据"""
     return get_eastmoney_provider().get_financial_data(symbol)
+
+def get_eastmoney_multiple_stocks(symbols: List[str], max_workers: int = 20) -> Dict[str, Dict[str, Any]]:
+    """批量获取股票信息"""
+    return get_eastmoney_provider().get_multiple_stocks(symbols, max_workers)
